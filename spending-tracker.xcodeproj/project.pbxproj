@@ -1,0 +1,554 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 110;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		1DFB948730621B69008CC23A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1DFB946F30621B68008CC23A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1DFB947630621B68008CC23A;
+			remoteInfo = "spending-tracker";
+		};
+		1DFB949130621B69008CC23A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1DFB946F30621B68008CC23A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1DFB947630621B68008CC23A;
+			remoteInfo = "spending-tracker";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		1DFB947730621B68008CC23A /* spending-tracker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "spending-tracker.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		1DFB948630621B69008CC23A /* spending-trackerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "spending-trackerTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		1DFB949030621B69008CC23A /* spending-trackerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "spending-trackerUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		1DFB947930621B68008CC23A /* spending-tracker */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "spending-tracker";
+			sourceTree = "<group>";
+		};
+		1DFB948930621B69008CC23A /* spending-trackerTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "spending-trackerTests";
+			sourceTree = "<group>";
+		};
+		1DFB949330621B69008CC23A /* spending-trackerUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "spending-trackerUITests";
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1DFB947430621B68008CC23A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		1DFB948330621B69008CC23A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		1DFB948D30621B69008CC23A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1DFB946E30621B68008CC23A = {
+			isa = PBXGroup;
+			children = (
+				1DFB947930621B68008CC23A /* spending-tracker */,
+				1DFB948930621B69008CC23A /* spending-trackerTests */,
+				1DFB949330621B69008CC23A /* spending-trackerUITests */,
+				1DFB947830621B68008CC23A /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		1DFB947830621B68008CC23A /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1DFB947730621B68008CC23A /* spending-tracker.app */,
+				1DFB948630621B69008CC23A /* spending-trackerTests.xctest */,
+				1DFB949030621B69008CC23A /* spending-trackerUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1DFB947630621B68008CC23A /* spending-tracker */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1DFB949830621B69008CC23A /* Build configuration list for PBXNativeTarget "spending-tracker" */;
+			buildPhases = (
+				1DFB947330621B68008CC23A /* Sources */,
+				1DFB947430621B68008CC23A /* Frameworks */,
+				1DFB947530621B68008CC23A /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				1DFB947930621B68008CC23A /* spending-tracker */,
+			);
+			name = "spending-tracker";
+			productName = "spending-tracker";
+			productReference = 1DFB947730621B68008CC23A /* spending-tracker.app */;
+			productType = "com.apple.product-type.application";
+		};
+		1DFB948530621B69008CC23A /* spending-trackerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1DFB949B30621B69008CC23A /* Build configuration list for PBXNativeTarget "spending-trackerTests" */;
+			buildPhases = (
+				1DFB948230621B69008CC23A /* Sources */,
+				1DFB948330621B69008CC23A /* Frameworks */,
+				1DFB948430621B69008CC23A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1DFB948830621B69008CC23A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1DFB948930621B69008CC23A /* spending-trackerTests */,
+			);
+			name = "spending-trackerTests";
+			productName = "spending-trackerTests";
+			productReference = 1DFB948630621B69008CC23A /* spending-trackerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		1DFB948F30621B69008CC23A /* spending-trackerUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1DFB949E30621B69008CC23A /* Build configuration list for PBXNativeTarget "spending-trackerUITests" */;
+			buildPhases = (
+				1DFB948C30621B69008CC23A /* Sources */,
+				1DFB948D30621B69008CC23A /* Frameworks */,
+				1DFB948E30621B69008CC23A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1DFB949230621B69008CC23A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1DFB949330621B69008CC23A /* spending-trackerUITests */,
+			);
+			name = "spending-trackerUITests";
+			productName = "spending-trackerUITests";
+			productReference = 1DFB949030621B69008CC23A /* spending-trackerUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		1DFB946F30621B68008CC23A /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					1DFB947630621B68008CC23A = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					1DFB948530621B69008CC23A = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 1DFB947630621B68008CC23A;
+					};
+					1DFB948F30621B69008CC23A = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 1DFB947630621B68008CC23A;
+					};
+				};
+			};
+			buildConfigurationList = 1DFB947230621B68008CC23A /* Build configuration list for PBXProject "spending-tracker" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 1DFB946E30621B68008CC23A;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 1DFB947830621B68008CC23A /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1DFB947630621B68008CC23A /* spending-tracker */,
+				1DFB948530621B69008CC23A /* spending-trackerTests */,
+				1DFB948F30621B69008CC23A /* spending-trackerUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1DFB947530621B68008CC23A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		1DFB948430621B69008CC23A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		1DFB948E30621B69008CC23A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1DFB947330621B68008CC23A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		1DFB948230621B69008CC23A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		1DFB948C30621B69008CC23A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		1DFB948830621B69008CC23A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1DFB947630621B68008CC23A /* spending-tracker */;
+			targetProxy = 1DFB948730621B69008CC23A /* PBXContainerItemProxy */;
+		};
+		1DFB949230621B69008CC23A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1DFB947630621B68008CC23A /* spending-tracker */;
+			targetProxy = 1DFB949130621B69008CC23A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		1DFB949630621B69008CC23A /* Debug configuration for PBXProject "spending-tracker" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = V86YQ472JY;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		1DFB949730621B69008CC23A /* Release configuration for PBXProject "spending-tracker" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = V86YQ472JY;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		1DFB949930621B69008CC23A /* Debug configuration for PBXNativeTarget "spending-tracker" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V86YQ472JY;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nikola.spending-tracker";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		1DFB949A30621B69008CC23A /* Release configuration for PBXNativeTarget "spending-tracker" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V86YQ472JY;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nikola.spending-tracker";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		1DFB949C30621B69008CC23A /* Debug configuration for PBXNativeTarget "spending-trackerTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V86YQ472JY;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nikola.spending-trackerTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/spending-tracker.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/spending-tracker";
+			};
+			name = Debug;
+		};
+		1DFB949D30621B69008CC23A /* Release configuration for PBXNativeTarget "spending-trackerTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V86YQ472JY;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nikola.spending-trackerTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/spending-tracker.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/spending-tracker";
+			};
+			name = Release;
+		};
+		1DFB949F30621B69008CC23A /* Debug configuration for PBXNativeTarget "spending-trackerUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V86YQ472JY;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nikola.spending-trackerUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "spending-tracker";
+			};
+			name = Debug;
+		};
+		1DFB94A030621B69008CC23A /* Release configuration for PBXNativeTarget "spending-trackerUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V86YQ472JY;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nikola.spending-trackerUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "spending-tracker";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1DFB947230621B68008CC23A /* Build configuration list for PBXProject "spending-tracker" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1DFB949630621B69008CC23A /* Debug configuration for PBXProject "spending-tracker" */,
+				1DFB949730621B69008CC23A /* Release configuration for PBXProject "spending-tracker" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		1DFB949830621B69008CC23A /* Build configuration list for PBXNativeTarget "spending-tracker" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1DFB949930621B69008CC23A /* Debug configuration for PBXNativeTarget "spending-tracker" */,
+				1DFB949A30621B69008CC23A /* Release configuration for PBXNativeTarget "spending-tracker" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		1DFB949B30621B69008CC23A /* Build configuration list for PBXNativeTarget "spending-trackerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1DFB949C30621B69008CC23A /* Debug configuration for PBXNativeTarget "spending-trackerTests" */,
+				1DFB949D30621B69008CC23A /* Release configuration for PBXNativeTarget "spending-trackerTests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		1DFB949E30621B69008CC23A /* Build configuration list for PBXNativeTarget "spending-trackerUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1DFB949F30621B69008CC23A /* Debug configuration for PBXNativeTarget "spending-trackerUITests" */,
+				1DFB94A030621B69008CC23A /* Release configuration for PBXNativeTarget "spending-trackerUITests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 1DFB946F30621B68008CC23A /* Project object */;
+	validationLevel = 1;
+}
