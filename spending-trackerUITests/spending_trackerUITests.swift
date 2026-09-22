@@ -2,7 +2,8 @@
 //  spending_trackerUITests.swift
 //  spending-trackerUITests
 //
-//  Created by Nikola Cao on 9/21/26.
+//  The unit tests never touch SwiftUI, so a screen that crashes on presentation would pass
+//  every one of them. These exist only to prove the screens open and are reachable.
 //
 
 import XCTest
@@ -10,34 +11,47 @@ import XCTest
 final class spending_trackerUITests: XCTestCase {
 
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testLedgerIsTheFirstScreen() throws {
+        let app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.navigationBars["Spending"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
+    func testManualEntryScreenOpens() throws {
         let app = XCUIApplication()
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        let add = app.buttons["Add manually"]
+        XCTAssertTrue(add.waitForExistence(timeout: 10))
+        add.tap()
+
+        XCTAssertTrue(app.navigationBars["Add manually"].waitForExistence(timeout: 5))
+
+        // The Record button must be disabled until there is something to record.
+        let record = app.buttons["Record"]
+        XCTAssertTrue(record.waitForExistence(timeout: 5))
+        XCTAssertFalse(record.isEnabled, "Record should be disabled while the field is empty")
     }
 
     @MainActor
-    func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
-        }
+    func testDiagnosticsScreenOpens() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let more = app.buttons["More"]
+        XCTAssertTrue(more.waitForExistence(timeout: 10))
+        more.tap()
+
+        let diagnostics = app.buttons["Diagnostics"]
+        XCTAssertTrue(diagnostics.waitForExistence(timeout: 5))
+        diagnostics.tap()
+
+        XCTAssertTrue(app.navigationBars["Diagnostics"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Charges recorded"].waitForExistence(timeout: 5))
     }
 }

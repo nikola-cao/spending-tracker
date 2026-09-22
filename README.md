@@ -25,6 +25,9 @@ nothing and stores no transactions yet.
 > **Stage 3 complete (2026-09-22).** The journal drains into SwiftData and the app is a
 > real spending feed. See below.
 >
+> **Stage 4 in progress.** Manual entry and the diagnostics surface are done; review-queue
+> actions and statement import are not. See below.
+>
 > Note the journal rows so far are synthetic: a real Fidelity alert has not yet flowed
 > end-to-end, though every stage of the path is now individually proven.
 
@@ -60,6 +63,42 @@ merging is not.
 **The store is derived.** It can be rebuilt from the journal, so a corrupt store is
 recoverable by deleting it and letting the journal replay. The journal is the only thing
 that must never lose a byte.
+
+## Adding a charge by hand
+
+The **+** button records a message you paste or type. It writes to the journal rather than
+straight into the store, deliberately: the text then takes the exact path the automation
+uses, so it is durable, replayable, and cannot drift from the real ingest.
+
+Two jobs. It's the fallback when the automation is down, and it's the only way to exercise
+the whole pipeline — journal → drain → parser → ledger — short of a real purchase. Since no
+live alert has yet flowed end to end, that second job is most of its value today.
+
+**Manual entries are excluded from the freshness check.** Otherwise adding a row by hand
+would hide the automation having stopped, which defeats the only warning the 7-day signing
+expiry gives. The diagnostics screen shows both timestamps separately.
+
+## Diagnostics
+
+Under the **⋯** menu. Answers the two questions no other screen can — *is the automation
+still capturing*, and *is anything arriving the parser can't read*. Both failures are
+otherwise silent: the Shortcut keeps firing, or the alert is simply absent.
+
+Shows last captured, last manual entry, counts of alerts/charges/not-read, the parser
+version in force, and the journal's size. The journal can be shared out from here.
+
+## Still missing
+
+- **Review-queue actions.** "Not read as a charge" is currently informational — there is no
+  way to act on a row. Worth building once real alerts exist and it's visible what actually
+  needs review.
+- **Statement import and reconciliation.** The plan's ledger of record, but it needs a real
+  statement export first. Building an importer against a guessed CSV format is the same
+  mistake the parser nearly made before real messages arrived.
+- **Editing a transaction.** Has a design problem worth deciding before building: the store
+  is *derived* from the journal, so an edit is not durable — replaying the journal would
+  discard it. Either edits get written back to the journal as their own record, or the store
+  stops being fully derived and the recovery story changes.
 
 ## The parser
 

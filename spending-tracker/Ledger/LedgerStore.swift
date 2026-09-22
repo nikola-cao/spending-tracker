@@ -170,6 +170,72 @@ final class LedgerStore {
         return repaired
     }
 
+    // MARK: - Manual entry
+
+    enum ManualEntryError: LocalizedError {
+        case empty
+
+        var errorDescription: String? {
+            switch self {
+            case .empty: "There is nothing to record."
+            }
+        }
+    }
+
+    /// Records a message the user typed or pasted.
+    ///
+    /// Appends to the **journal**, not the store, deliberately: the text then takes the exact
+    /// path the automation uses, so it is durable, replayable, and cannot drift from the real
+    /// ingest. It also means the whole pipeline can be exercised end to end without waiting
+    /// for a real purchase — which, given no live alert has ever flowed through, is most of
+    /// its value today.
+    @discardableResult
+    func appendManualEntry(_ text: String) throws -> UUID {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { throw ManualEntryError.empty }
+
+        let runID = UUID()
+        try JournalStore.append(
+            .diagnostic(runID: runID, phase: "result", raw: body, note: JournalRecord.manualMarker),
+            to: journalURL
+        )
+        return runID
+    }
+
+    // MARK: - Diagnostics
+
+    struct Diagnostics: Equatable {
+        var eventCount = 0
+        var transactionCount = 0
+        var needsReviewCount = 0
+        var parserVersion = 0
+        var journalLines = 0
+        var journalBytes = 0
+        var lastCapture: Date?
+        var lastManualEntry: Date?
+    }
+
+    /// Everything needed to answer "is capture still working, and is the ledger keeping up".
+    func diagnostics() -> Diagnostics {
+        var result = Diagnostics()
+        let context = container.mainContext
+
+        result.eventCount = (try? context.fetchCount(FetchDescriptor<AlertEvent>())) ?? 0
+        result.transactionCount = (try? context.fetchCount(FetchDescriptor<Txn>())) ?? 0
+        result.needsReviewCount = result.eventCount - result.transactionCount
+        result.parserVersion = FidelityAlertParser.version
+
+        let records = JournalStore.readAll(from: journalURL)
+        result.journalLines = records.count
+        // Manual entries are excluded: this answers "is the AUTOMATION still capturing".
+        result.lastCapture = records.last { $0.note != JournalRecord.manualMarker }?.receivedAt
+        result.lastManualEntry = records.last { $0.note == JournalRecord.manualMarker }?.receivedAt
+
+        result.journalBytes = (try? FileManager.default
+            .attributesOfItem(atPath: journalURL.path(percentEncoded: false))[.size] as? Int) ?? 0
+        return result
+    }
+
     // MARK: - Internals
 
     private func knownOccurrences(in context: ModelContext) -> Set<String> {

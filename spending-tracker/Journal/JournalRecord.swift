@@ -45,6 +45,17 @@ nonisolated struct JournalRecord: Codable, Sendable, Equatable, Identifiable {
 }
 
 extension JournalRecord {
+    /// Marks a line a person typed rather than the automation capturing it.
+    ///
+    /// Carried in `note` rather than a new field on purpose: `JournalRecord` is `Codable` and
+    /// the journal is append-only, so adding a non-optional property would make every existing
+    /// line fail to decode — and `readAll` drops undecodable lines, meaning an entire history
+    /// would vanish silently.
+    ///
+    /// The freshness check excludes these. A manual entry must never make capture look alive
+    /// when the automation has actually stopped.
+    static let manualMarker = "manual"
+
     /// Explicitly `nonisolated` — the type's isolation does not propagate into an extension.
     nonisolated static func diagnostic(
         runID: UUID,

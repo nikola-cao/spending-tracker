@@ -32,6 +32,8 @@ struct ContentView: View {
 
     @State private var lastCapture: Date?
     @State private var isShowingJournal = false
+    @State private var isShowingManualEntry = false
+    @State private var isShowingDiagnostics = false
     @State private var saveError: String?
 
     var body: some View {
@@ -46,11 +48,33 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        isShowingJournal = true
+                        isShowingManualEntry = true
                     } label: {
-                        Label("Raw journal", systemImage: "doc.text.magnifyingglass")
+                        Label("Add manually", systemImage: "plus")
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            isShowingDiagnostics = true
+                        } label: {
+                            Label("Diagnostics", systemImage: "stethoscope")
+                        }
+                        Button {
+                            isShowingJournal = true
+                        } label: {
+                            Label("Raw journal", systemImage: "doc.text.magnifyingglass")
+                        }
+                    } label: {
+                        Label("More", systemImage: "ellipsis.circle")
+                    }
+                }
+            }
+            .sheet(isPresented: $isShowingManualEntry) {
+                ManualEntryView(ledger: ledger) { refresh() }
+            }
+            .sheet(isPresented: $isShowingDiagnostics) {
+                DiagnosticsView(ledger: ledger)
             }
             .sheet(isPresented: $isShowingJournal) {
                 NavigationStack { JournalView() }
@@ -71,8 +95,11 @@ struct ContentView: View {
         let result = ledger.drain()
         saveError = result.saveError
         // Read from the journal rather than the store: this answers "is capture still
-        // working", which must not depend on the drain having succeeded.
-        lastCapture = JournalStore.readAll(from: JournalLocation.fileURL).last?.receivedAt
+        // working", which must not depend on the drain having succeeded. Manual entries are
+        // excluded — a row added by hand must never paper over the automation having stopped.
+        lastCapture = JournalStore.readAll(from: JournalLocation.fileURL)
+            .last { $0.note != JournalRecord.manualMarker }?
+            .receivedAt
     }
 
     /// A refused write is the one failure that would otherwise render a complete-looking

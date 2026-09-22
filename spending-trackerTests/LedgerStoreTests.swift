@@ -265,4 +265,61 @@ struct LedgerStoreTests {
         #expect(LedgerStore.contentHash(body) != LedgerStore.contentHash(charge("2.51", "BREEZE*00HS5MV")))
         #expect(LedgerStore.contentHash(body).count == 64)
     }
+
+    // MARK: - Manual entry
+
+    /// A hand-added message must take the identical path, or the fallback would be a second
+    /// ingest implementation that drifts from the real one.
+    @Test func manualEntryGoesThroughTheSamePipeline() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.appendManualEntry(charge("2.50", "BREEZE*00HS5MV"))
+
+        let result = ledger.drain()
+
+        #expect(result.eventsAdded == 1)
+        #expect(result.transactionsAdded == 1)
+        #expect(txns(container).count == 1)
+        // Recorded in the journal, so it is durable and replayable like anything else.
+        #expect(JournalStore.readAll(from: url).first?.note == JournalRecord.manualMarker)
+    }
+
+    @Test func emptyManualEntryIsRejected() throws {
+        let (ledger, container, _) = try makeStore()
+        #expect(throws: LedgerStore.ManualEntryError.self) {
+            try ledger.appendManualEntry("   \n  ")
+        }
+        #expect(events(container).isEmpty)
+    }
+
+    /// The freshness check exists to detect the automation having stopped. A row typed by hand
+    /// must not make it look alive — that would defeat the only warning the 7-day signing
+    /// expiry gives.
+    @Test func manualEntriesDoNotCountAsCapture() throws {
+        let (ledger, _, url) = try makeStore()
+        try appendAlert(charge("2.50", "REAL CAPTURE"), to: url)
+        let capturedAt = try #require(JournalStore.readAll(from: url).last?.receivedAt)
+
+        // More recent than the real capture, and must still not win.
+        try ledger.appendManualEntry(charge("9.99", "TYPED BY HAND"))
+
+        let diag = ledger.diagnostics()
+        #expect(diag.lastCapture == capturedAt)
+        #expect(diag.lastManualEntry != nil)
+    }
+
+    @Test func diagnosticsCountWhatActuallyHappened() throws {
+        let (ledger, _, url) = try makeStore()
+        try appendAlert(charge("2.50", "A"), to: url)
+        try appendAlert("Your Uber code is 1234", to: url)
+
+        ledger.drain()
+        let diag = ledger.diagnostics()
+
+        #expect(diag.eventCount == 2)
+        #expect(diag.transactionCount == 1)
+        #expect(diag.needsReviewCount == 1)
+        #expect(diag.parserVersion == FidelityAlertParser.version)
+        #expect(diag.journalLines == 4)
+        #expect(diag.journalBytes > 0)
+    }
 }
