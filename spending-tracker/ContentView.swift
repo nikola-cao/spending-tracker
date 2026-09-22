@@ -2,67 +2,86 @@
 //  ContentView.swift
 //  spending-tracker
 //
-//  Stage 1's only screen: the journal, plus the diagnostic.
+//  The ledger: what was spent, newest first.
 //
 
 import Foundation
+import SwiftData
 import SwiftUI
 
 struct ContentView: View {
-    @State private var records: [JournalRecord] = []
+
+    let ledger: LedgerStore
+
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// No predicate. `Txn` holds only parsed charges by construction — an alert that did not
+    /// resolve to a charge has no `Txn` at all — so unlike the query below, this cannot
+    /// accidentally include something that is not a transaction.
+    @Query(sort: [SortDescriptor(\Txn.occurredAt, order: .reverse)])
+    private var transactions: [Txn]
+
+    /// Alerts that arrived but did not resolve to a charge: an unparseable body, or a verb
+    /// that is not "charged". Kept visible rather than dropped, because the whole point of
+    /// the parser rejecting ambiguous input is that the rejection should be *seen*.
+    @Query(
+        filter: #Predicate<AlertEvent> { $0.transaction == nil },
+        sort: [SortDescriptor(\AlertEvent.receivedAt, order: .reverse)]
+    )
+    private var unresolved: [AlertEvent]
+
+    @State private var lastCapture: Date?
+    @State private var isShowingJournal = false
 
     var body: some View {
         NavigationStack {
             List {
-                if records.isEmpty {
-                    emptyState
-                } else {
-                    freshnessSection
-                    Section {
-                        // reversed(), never sorted by date: `.iso8601` JSON dates have
-                        // one-second resolution in this SDK, so the timestamp cannot order
-                        // two records written in the same run. File position can.
-                        ForEach(Array(records.reversed())) { record in
-                            JournalRow(record: record)
-                        }
-                    } header: {
-                        Text("\(records.count) lines · newest first")
-                    } footer: {
-                        Text(JournalLocation.directoryPath)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.tertiary)
-                    }
-                }
+                freshnessSection
+                if !unresolved.isEmpty { needsReviewSection }
+                transactionsSection
             }
-            .navigationTitle("Journal")
+            .navigationTitle("Spending")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    // Gets the journal off the phone without Xcode — mail it, AirDrop it.
-                    ShareLink(item: journalText) {
-                        Label("Share", systemImage: "square.and.arrow.up")
+                    Button {
+                        isShowingJournal = true
+                    } label: {
+                        Label("Raw journal", systemImage: "doc.text.magnifyingglass")
                     }
-                    .disabled(records.isEmpty)
                 }
             }
-            .task { reload() }
-            .refreshable { reload() }
+            .sheet(isPresented: $isShowingJournal) {
+                NavigationStack { JournalView() }
+            }
+            .task { refresh() }
+            // Draining on foreground is what turns the raw journal into ledger rows. It is
+            // idempotent, so it is safe to run on every activation, and it doubles as the
+            // self-healing path: anything the intent wrote while the app was closed is picked
+            // up here.
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { refresh() }
+            }
+            .refreshable { refresh() }
         }
+    }
+
+    private func refresh() {
+        ledger.drain()
+        // Read from the journal rather than the store: this answers "is capture still
+        // working", which must not depend on the drain having succeeded.
+        lastCapture = JournalStore.readAll(from: JournalLocation.fileURL).last?.receivedAt
     }
 
     // MARK: - Freshness
     //
-    // The app's signing expires every 7 days on a free Apple ID. When it does, the Shortcut
-    // still fires and the App Intent simply never runs — capture stops with no error
-    // anywhere. This banner is the only thing that makes that visible, which is why it is
-    // the first thing on the screen rather than a debug affordance.
-
-    private var lastWrite: Date? { records.last?.receivedAt }
+    // Signing expires every 7 days on a free Apple ID, and when it does the Shortcut still
+    // fires while the App Intent quietly never runs. Capture stops with no error anywhere.
+    // This banner is the only thing that makes that visible.
 
     private var staleness: (text: String, isStale: Bool) {
-        guard let lastWrite else { return ("Never captured", true) }
-        let hours = Date().timeIntervalSince(lastWrite) / 3600
-        let ago = lastWrite.formatted(.relative(presentation: .named))
-        return ("Last capture: \(ago)", hours > 48)
+        guard let lastCapture else { return ("No alerts captured yet", true) }
+        let hours = Date().timeIntervalSince(lastCapture) / 3600
+        return ("Last capture: \(lastCapture.formatted(.relative(presentation: .named)))", hours > 48)
     }
 
     private var freshnessSection: some View {
@@ -70,12 +89,12 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 Image(systemName: staleness.isStale
                       ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(staleness.isStale ? .red : .green)
+                    .foregroundStyle(staleness.isStale ? Color.red : Color.green)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(staleness.text).font(.subheadline.weight(.medium))
                     if staleness.isStale {
-                        Text("Nothing has been captured in over 48 hours. Re-sign the app "
-                             + "from Xcode (⌘R), then check the automation is still enabled.")
+                        Text("Nothing captured in over 48 hours. Re-sign the app from Xcode "
+                             + "(⌘R), then check the automation is still enabled.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -85,118 +104,137 @@ struct ContentView: View {
         .listRowBackground(staleness.isStale ? Color.red.opacity(0.10) : nil)
     }
 
-    // MARK: - Empty state
-    //
-    // The empty state IS a diagnostic: "nothing ever ran" is the failure this screen will
-    // most often be showing, and the four causes below are the ones that actually happen.
+    // MARK: - Ledger
 
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label("Journal is empty", systemImage: "tray")
-        } description: {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Nothing has written to this file yet.")
-                Text("""
-                    1. Is the automation enabled, with "Run Immediately" on?
-                    2. Is Shortcuts → Privacy → "Allow Running When Locked" on?
-                    3. Does the sub-shortcut run on its own, from the Shortcuts app?
-                    4. Did you force-quit this app? (iOS won't relaunch it — don't)
-                    """)
-                Text(JournalLocation.directoryPath)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
+    @ViewBuilder
+    private var transactionsSection: some View {
+        if transactions.isEmpty {
+            Section {
+                ContentUnavailableView {
+                    Label("No charges yet", systemImage: "creditcard")
+                } description: {
+                    Text(unresolved.isEmpty
+                         ? "Alerts captured by the automation will appear here."
+                         : "Alerts arrived but none could be read as a charge.")
+                }
+            }
+        } else {
+            Section {
+                ForEach(transactions) { txn in
+                    TxnRow(txn: txn)
+                }
+            } header: {
+                Text(chargesHeader)
             }
         }
     }
 
-    private var journalText: String {
-        records
-            .map { "\($0.phase)\t\($0.processName)\t\($0.charCount)\t\($0.rawText)" }
-            .joined(separator: "\n")
+    /// Hoisted out of the `ViewBuilder`: an interpolated ternary inside one is what blows the
+    /// type checker's time budget.
+    private var chargesHeader: String {
+        let noun = transactions.count == 1 ? "charge" : "charges"
+        return "\(transactions.count) \(noun)"
     }
 
-    private func reload() {
-        records = JournalStore.readAll(from: JournalLocation.fileURL)
+    private var needsReviewSection: some View {
+        Section {
+            ForEach(unresolved) { event in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(event.body)
+                        .font(.footnote.monospaced())
+                        .lineLimit(4)
+                    Text(event.receivedAt, format: .dateTime.month().day().hour().minute())
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+            }
+        } header: {
+            Label("\(unresolved.count) not read as a charge", systemImage: "questionmark.circle")
+        } footer: {
+            Text("The raw text is kept, so a parser fix can recover these.")
+                .font(.caption2)
+        }
     }
 }
 
-private struct JournalRow: View {
-    let record: JournalRecord
+private struct TxnRow: View {
+    let txn: Txn
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text(record.phase == "enter" ? "▸ enter" : "✓ result")
-                    .font(.caption.bold())
-                    .foregroundStyle(record.phase == "enter" ? .orange : .green)
-                Text(record.receivedAt, format: .dateTime.hour().minute().second())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("\(record.charCount) ch")
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(txn.merchant)
+                    .font(.body)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-
-            // The four bits worth seeing at a glance, without tapping anything.
-            // Hoisted into `diagnosticLine` for the same reason as in the intent: a
-            // concatenation of interpolated ternaries blows the type checker's budget.
-            Text(diagnosticLine)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            // Stage 2 output, computed at display time from the raw text. Nothing is
-            // persisted here — the journal stays the single source of truth, and the
-            // ledger (Stage 3) is what will actually store parsed values. Showing it now
-            // means a real alert can be verified on the phone without waiting for that.
-            if let parsedSummary {
-                Text(parsedSummary)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(Color.accentColor)
-            }
-
-            Text(record.rawText)
-                .font(.footnote.monospaced())
-
-            // Only surface a note when it carries information. "ok" is the success case and
-            // is already implied by the phase. (The ternary form also failed to type-check:
-            // `.secondary` is a HierarchicalShapeStyle and `.red` is a Color.)
-            if !record.note.isEmpty && record.note != "ok" {
-                Text(record.note)
-                    .font(.caption2)
-                    .foregroundStyle(Color.red)
-            }
+            Spacer(minLength: 0)
+            Text(txn.formattedAmount)
+                .font(.body.monospacedDigit())
+                .foregroundStyle(.primary)
         }
         .padding(.vertical, 2)
     }
 
-    private var diagnosticLine: String {
-        let main = record.isMainThread ? "y" : "n"
-        let rx = record.containsRegisteredTrademark ? "y" : "n"
-        let fid = record.mentionsFidelity ? "y" : "n"
-        let grp = record.appGroupAvailable ? "y" : "n"
-        return [
-            record.processName,
-            "main:\(main)",
-            "®:\(rx)",
-            "fid:\(fid)",
-            "grp:\(grp)",
-        ].joined(separator: " · ")
-    }
-
-    /// nil when the body is not a parseable alert. An unparseable row is not an error —
-    /// the journal recorded it either way, and that is the point of keeping raw text.
-    private var parsedSummary: String? {
-        guard let alert = FidelityAlertParser.parseFirst(record.rawText) else { return nil }
-        let amount = (Decimal(alert.amountMinor) / 100)
-            .formatted(.currency(code: alert.currencyCode))
-        var parts = [amount, alert.merchant, "••\(alert.cardLast4)"]
-        // Only charges are in scope, so any other verb is a format change worth seeing.
-        if !alert.isCharge { parts.append("verb: \(alert.rawVerb)") }
+    private var subtitle: String {
+        var parts = ["••\(txn.cardLast4)", txn.occurredAt.formatted(date: .abbreviated, time: .shortened)]
+        if txn.possibleDuplicate { parts.append("possible duplicate") }
         return parts.joined(separator: " · ")
     }
 }
 
+/// The raw journal, kept reachable for diagnosis. If the ledger ever disagrees with what was
+/// actually received, this is the record that settles it.
+struct JournalView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var records: [JournalRecord] = []
+
+    var body: some View {
+        List {
+            Section {
+                Text(JournalLocation.directoryPath)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
+            Section("\(records.count) lines · newest first") {
+                ForEach(Array(records.reversed())) { record in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(record.phase == "enter" ? "▸ enter" : "✓ result")
+                                .font(.caption.bold())
+                                .foregroundStyle(record.phase == "enter" ? Color.orange : Color.green)
+                            Text(record.receivedAt, format: .dateTime.hour().minute().second())
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(record.charCount) ch")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(record.rawText).font(.footnote.monospaced())
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+        .navigationTitle("Raw journal")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Done") { dismiss() }
+            }
+        }
+        .task { records = JournalStore.readAll(from: JournalLocation.fileURL) }
+    }
+}
+
 #Preview {
-    ContentView()
+    ContentView(ledger: LedgerStore(container: try! ModelContainer(
+        for: Schema([AlertEvent.self, Txn.self]),
+        configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+    )))
 }
