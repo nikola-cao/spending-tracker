@@ -19,10 +19,49 @@ nothing and stores no transactions yet.
 > It also validates the automation → *Run Shortcut* → sub-shortcut indirection that
 > iOS 26's restricted automation action list forces.
 >
-> **Next: Stage 2 — the parser**, a pure function testable without the app or the
-> automation. Note the journal rows so far are synthetic: a real Fidelity alert with a
-> long merchant string has not yet flowed end-to-end, though every stage of the path is
-> now individually proven.
+> **Stage 2 complete (2026-09-22).** The parser extracts an amount, card, merchant and
+> verb from a raw body, and is hardened against an adversarial corpus. See below.
+>
+> Note the journal rows so far are synthetic: a real Fidelity alert has not yet flowed
+> end-to-end, though every stage of the path is now individually proven.
+
+## The parser
+
+`FidelityAlertParser` is a pure function — no store, no UI, no async — so it is fully
+testable without the app or the automation. Stage 3 will persist its output; today the
+journal screen calls it at display time, so nothing is stored and the journal remains the
+only source of truth.
+
+**A rejected parse is better than a wrong number.** Where the input is ambiguous, the
+parser discards the match rather than guessing. A discarded alert is *visibly* absent from
+the parsed output; a wrong amount is not visible at all. This is why:
+
+- `$2,50` (a decimal comma from any locale-aware hop) is **rejected**, not read as `$250.00`.
+  `1,204` is genuinely ambiguous between the US thousands reading and the European decimal
+  one, so there is no safe guess. A rejected row simply shows no parsed line.
+- An amount above `$1,000,000,000` is rejected, which also makes the integer arithmetic
+  provably overflow-free. (`whole * 100` on an absurd amount previously overflowed `Int64`
+  and **trapped the process** — an uncatchable crash, not a returned error.)
+
+Other guards, each one a shape that produced a wrong value before it existed:
+
+| Guard | Without it |
+|---|---|
+| `[0-9]` not `\d` for the card number | ICU's `\d` matches any Unicode digit, so Arabic-Indic digits were captured as the card and could never match the real card |
+| Trailer matched loosely, then the descriptor cleaned | An HTML-escaped `&amp;` or a trailer truncated to `Msg&Dat` let the merchant absorb the boilerplate |
+| Descriptor may not start with sentence punctuation | An empty descriptor became a phantom row whose merchant *was* the boilerplate |
+| Newlines flattened, zero-width characters stripped | `.` cannot cross a newline, so any newline inside an alert made every terminator unreachable and the charge vanished |
+| Tempered capture, stopping at the next alert's preamble | An unterminated alert's lazy capture swallowed the *next* alert whole, losing a well-formed purchase |
+
+**Known and accepted**, not fixed:
+
+- An alert **embedded** in another message (a support transcript quoting one, a forward)
+  parses identically to a live alert. Unfixable at this layer — the ledger must handle it.
+- An **unterminated** alert followed by a good one is lost; the good one survives. Lossy,
+  but strictly better than losing both, which is what happened before.
+- Non-charge verbs (`refunded`, `declined`) still yield an amount-bearing result, flagged
+  as `kind != .charge`. Consumers must filter on `isCharge` rather than assume. Flagging
+  beats dropping: a format change should be visible, not silent.
 
 Everything else is ordinary app work.
 

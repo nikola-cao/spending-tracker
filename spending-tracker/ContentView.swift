@@ -145,6 +145,16 @@ private struct JournalRow: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
+            // Stage 2 output, computed at display time from the raw text. Nothing is
+            // persisted here — the journal stays the single source of truth, and the
+            // ledger (Stage 3) is what will actually store parsed values. Showing it now
+            // means a real alert can be verified on the phone without waiting for that.
+            if let parsedSummary {
+                Text(parsedSummary)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Color.accentColor)
+            }
+
             Text(record.rawText)
                 .font(.footnote.monospaced())
 
@@ -172,6 +182,18 @@ private struct JournalRow: View {
             "fid:\(fid)",
             "grp:\(grp)",
         ].joined(separator: " · ")
+    }
+
+    /// nil when the body is not a parseable alert. An unparseable row is not an error —
+    /// the journal recorded it either way, and that is the point of keeping raw text.
+    private var parsedSummary: String? {
+        guard let alert = FidelityAlertParser.parseFirst(record.rawText) else { return nil }
+        let amount = (Decimal(alert.amountMinor) / 100)
+            .formatted(.currency(code: alert.currencyCode))
+        var parts = [amount, alert.merchant, "••\(alert.cardLast4)"]
+        // Only charges are in scope, so any other verb is a format change worth seeing.
+        if !alert.isCharge { parts.append("verb: \(alert.rawVerb)") }
+        return parts.joined(separator: " · ")
     }
 }
 
