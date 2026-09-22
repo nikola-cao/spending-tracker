@@ -22,8 +22,44 @@ nothing and stores no transactions yet.
 > **Stage 2 complete (2026-09-22).** The parser extracts an amount, card, merchant and
 > verb from a raw body, and is hardened against an adversarial corpus. See below.
 >
+> **Stage 3 complete (2026-09-22).** The journal drains into SwiftData and the app is a
+> real spending feed. See below.
+>
 > Note the journal rows so far are synthetic: a real Fidelity alert has not yet flowed
 > end-to-end, though every stage of the path is now individually proven.
+
+## The ledger
+
+The App Intent is deliberately **not** involved. It keeps writing raw text to the journal,
+and the app drains that journal into SwiftData when it becomes active. Writing at capture
+time buys nothing — the UI only exists while the app is open — and leaving the intent alone
+means nothing in Stage 3 can break the one component proven on real hardware.
+
+Two models, and the split is load-bearing:
+
+| | |
+|---|---|
+| `AlertEvent` | What **arrived**. Verbatim body, never rewritten. Every message, parsed or not. |
+| `Txn` | What we **concluded**. Parsed charges only. |
+
+`Txn` contains *only* charges, so the feed query needs no predicate. That is structural
+rather than conventional — a forgotten predicate is exactly how an unparsed row would
+silently pollute a total, and a wrong total is invisible.
+
+**Dedup keys on the invocation, not the message.** This matters more than it looks: a
+Fidelity body is a pure function of (card, amount, merchant) — no transaction id, no
+timestamp — so a monthly `$15.49 at NETFLIX.COM` is *byte-identical* every month. Keyed on
+the body, the second month onward is silently discarded with no row and no trace. The key is
+`runID#matchIndex` from the journal, which collapses the `enter`/`result` pair (they share a
+`runID`) while recording genuine repeats.
+
+A near-identical charge — same card, amount and merchant within 5 minutes — is **flagged,
+never merged**. Two identical charges are two real charges; flagging is recoverable, silent
+merging is not.
+
+**The store is derived.** It can be rebuilt from the journal, so a corrupt store is
+recoverable by deleting it and letting the journal replay. The journal is the only thing
+that must never lose a byte.
 
 ## The parser
 

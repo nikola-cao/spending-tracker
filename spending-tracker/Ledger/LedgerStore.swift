@@ -25,7 +25,7 @@ import SwiftData
 ///    default init), SwiftData writes from a non-main actor, and a second process opening the
 ///    same store.
 ///
-/// The journal stays the source of truth. If this is ever wrong, the journal can be replayed.
+/// The journal stays the source of truth. The store is *derived* and can be rebuilt from it.
 @MainActor
 final class LedgerStore {
 
@@ -34,6 +34,12 @@ final class LedgerStore {
         var eventsAdded = 0
         var transactionsAdded = 0
         var needsReview = 0
+        /// Events re-derived because they were recorded by an older parser.
+        var repaired = 0
+        /// Non-nil when the store refused the write. Surfaced in the UI rather than
+        /// swallowed: a silent save failure renders a complete-looking ledger that is not on
+        /// disk and vanishes at relaunch.
+        var saveError: String?
     }
 
     private let container: ModelContainer
@@ -44,88 +50,139 @@ final class LedgerStore {
         self.journalURL = journalURL
     }
 
-    /// Two charges that look identical this close together are probably the same event
-    /// arriving twice. Flagged, never merged — see `Txn.possibleDuplicate`.
+    /// Two charges that look identical this close together may be the same event arriving
+    /// twice. Flagged, never merged — see `Txn.possibleDuplicate`.
     private static let duplicateWindow: TimeInterval = 300
 
     /// Reads the journal and adds anything not already recorded. Idempotent, so it is safe to
     /// call on every foreground.
+    ///
+    /// Fully synchronous, and therefore non-reentrant by construction: there is no `await`
+    /// anywhere below, so the three call sites (`.task`, `scenePhase`, pull-to-refresh) cannot
+    /// interleave on the main actor.
     @discardableResult
     func drain() -> DrainResult {
         var result = DrainResult()
 
+        let context = container.mainContext
         let records = JournalStore.readAll(from: journalURL)
-        guard !records.isEmpty else { return result }
         result.recordsRead = records.count
 
-        let context = container.mainContext
-        var known = knownHashes(in: context)
-
-        for record in records {
-            // The intent writes an `enter`/`result` pair per alert and both carry the same
-            // body, so the hash collapses them to one event. It also collapses a genuine
-            // redelivery, which is the point of hashing the raw text rather than the fields.
-            let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !body.isEmpty else { continue }
-
-            let hash = Self.contentHash(body)
-            guard !known.contains(hash) else { continue }
-            known.insert(hash)
-
-            let event = AlertEvent(
-                receivedAt: record.receivedAt,
-                body: body,
-                contentHash: hash,
-                parseState: .needsReview,
-                parserVersion: FidelityAlertParser.version
-            )
-            context.insert(event)
-            result.eventsAdded += 1
-
-            guard let alert = FidelityAlertParser.parseFirst(body), alert.isCharge else {
-                // Unparsed, or parsed as something that is not a charge. The raw text is
-                // kept and the event is shown for review; no ledger row is derived.
-                result.needsReview += 1
-                continue
-            }
-
-            let txn = Txn(from: alert, occurredAt: record.receivedAt)
-            // Computed BEFORE the row is inserted or wired up, so the fetch cannot see it.
-            txn.possibleDuplicate = hasNearbyEqual(txn, in: context)
-            context.insert(txn)
-
-            txn.event = event
-            event.transaction = txn
-            event.parseStateRaw = AlertParseState.parsed.rawValue
-            result.transactionsAdded += 1
+        // Reprocessing runs even when the journal is empty: an event left unparsed by an older
+        // parser must still be repaired, and an early return here would strand it forever.
+        if !records.isEmpty {
+            ingest(records, into: context, result: &result)
         }
+        result.repaired = reprocessStaleEvents(in: context)
 
-        try? context.save()
+        do {
+            try context.save()
+        } catch {
+            // Roll back so the UI cannot render rows that are not on disk, and report it.
+            // The journal is untouched, so the next drain retries from scratch.
+            context.rollback()
+            result.saveError = error.localizedDescription
+        }
         return result
     }
 
-    /// How many events are recorded. Used by tests and the diagnostics row.
-    func eventCount() -> Int {
-        (try? container.mainContext.fetchCount(FetchDescriptor<AlertEvent>())) ?? 0
+    private func ingest(
+        _ records: [JournalRecord],
+        into context: ModelContext,
+        result: inout DrainResult
+    ) {
+        var known = knownOccurrences(in: context)
+
+        for record in records {
+            let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { continue }
+
+            // One body can carry more than one alert — bodies have been observed concatenated
+            // with no separator. `nil` stands for "nothing recognisable here", so a body that
+            // parses to nothing still becomes an event and its raw text is kept for review.
+            let parsed = FidelityAlertParser.parseAll(body)
+            let matches: [ParsedAlert?] = parsed.isEmpty ? [nil] : parsed
+
+            for (index, alert) in matches.enumerated() {
+                // Keyed on the INVOCATION, not the body. See `AlertEvent.occurrenceKey` for
+                // why: a body is not unique per transaction, so keying on it silently dropped
+                // every repeat charge — a monthly subscription would be recorded once, ever.
+                let key = "\(record.runID.uuidString)#\(index)"
+                guard !known.contains(key) else { continue }
+                known.insert(key)
+
+                let event = AlertEvent(
+                    receivedAt: record.receivedAt,
+                    runID: record.runID,
+                    matchIndex: index,
+                    body: body,
+                    contentHash: Self.contentHash(body),
+                    parseState: .needsReview,
+                    parserVersion: FidelityAlertParser.version
+                )
+                context.insert(event)
+                result.eventsAdded += 1
+
+                guard let alert, alert.isCharge else {
+                    result.needsReview += 1
+                    continue
+                }
+
+                let txn = Txn(from: alert, occurredAt: record.receivedAt)
+                // Computed BEFORE the row is inserted or wired up, so the fetch cannot see it.
+                txn.possibleDuplicate = hasNearbyEqual(txn, in: context)
+                context.insert(txn)
+
+                txn.event = event
+                event.transaction = txn
+                event.parseStateRaw = AlertParseState.parsed.rawValue
+                result.transactionsAdded += 1
+            }
+        }
     }
 
-    func transactionCount() -> Int {
-        (try? container.mainContext.fetchCount(FetchDescriptor<Txn>())) ?? 0
+    /// Re-derives transactions for events that were recorded by an older parser.
+    ///
+    /// Without this, "the raw text is kept so a parser fix can recover these" is a promise the
+    /// code cannot keep: the occurrence guard skips any event already recorded, so an alert
+    /// that failed to parse would stay unparsed forever no matter how good the parser became.
+    /// This is what makes the journal genuinely replayable rather than merely retained.
+    private func reprocessStaleEvents(in context: ModelContext) -> Int {
+        let version = FidelityAlertParser.version
+        let descriptor = FetchDescriptor<AlertEvent>(
+            predicate: #Predicate { $0.transaction == nil && $0.parserVersion < version }
+        )
+        guard let stale = try? context.fetch(descriptor), !stale.isEmpty else { return 0 }
+
+        var repaired = 0
+        for event in stale {
+            event.parserVersion = version
+            guard let alert = FidelityAlertParser.parseFirst(event.body), alert.isCharge else { continue }
+
+            let txn = Txn(from: alert, occurredAt: event.receivedAt)
+            txn.possibleDuplicate = hasNearbyEqual(txn, in: context)
+            context.insert(txn)
+            txn.event = event
+            event.transaction = txn
+            event.parseStateRaw = AlertParseState.parsed.rawValue
+            repaired += 1
+        }
+        return repaired
     }
 
     // MARK: - Internals
 
-    private func knownHashes(in context: ModelContext) -> Set<String> {
+    private func knownOccurrences(in context: ModelContext) -> Set<String> {
         let events = (try? context.fetch(FetchDescriptor<AlertEvent>())) ?? []
-        return Set(events.map(\.contentHash))
+        return Set(events.map(\.occurrenceKey))
     }
 
     /// True when a same-looking charge already exists within `duplicateWindow`.
     ///
-    /// Windowed on purpose: two identical amounts at the same merchant *hours* apart are two
-    /// real purchases, and flagging those would train the flag to be ignored. Note this only
-    /// ever catches a *near*-identical pair — a byte-identical redelivery is already dropped
-    /// by the content hash before it reaches here.
+    /// Windowed on purpose. Two identical amounts at the same merchant *hours* apart are two
+    /// real purchases — the same coffee bought twice this month — and flagging those would
+    /// train the flag to be ignored. This is the only place a repeated charge is treated as
+    /// suspicious, and it never discards: both rows are kept and one is labelled.
     private func hasNearbyEqual(_ txn: Txn, in context: ModelContext) -> Bool {
         let card = txn.cardLast4
         let amount = txn.amountMinor
@@ -145,8 +202,9 @@ final class LedgerStore {
         return ((try? context.fetchCount(descriptor)) ?? 0) > 0
     }
 
-    /// SHA-256 of the raw body. Stable across runs and platforms, and never stored as
-    /// `@Attribute(.unique)` — the uniqueness is enforced by looking it up, not by the store.
+    /// SHA-256 of the raw body. Stable across runs and platforms. Retained for
+    /// cross-referencing — deliberately NOT the dedup key, and deliberately not declared
+    /// `@Attribute(.unique)`, whose uniqueness would be enforced by clobbering, not by lookup.
     static func contentHash(_ body: String) -> String {
         SHA256.hash(data: Data(body.utf8))
             .map { String(format: "%02x", $0) }

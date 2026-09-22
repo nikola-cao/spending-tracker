@@ -32,11 +32,13 @@ struct ContentView: View {
 
     @State private var lastCapture: Date?
     @State private var isShowingJournal = false
+    @State private var saveError: String?
 
     var body: some View {
         NavigationStack {
             List {
                 freshnessSection
+                saveErrorSection
                 if !unresolved.isEmpty { needsReviewSection }
                 transactionsSection
             }
@@ -66,10 +68,37 @@ struct ContentView: View {
     }
 
     private func refresh() {
-        ledger.drain()
+        let result = ledger.drain()
+        saveError = result.saveError
         // Read from the journal rather than the store: this answers "is capture still
         // working", which must not depend on the drain having succeeded.
         lastCapture = JournalStore.readAll(from: JournalLocation.fileURL).last?.receivedAt
+    }
+
+    /// A refused write is the one failure that would otherwise render a complete-looking
+    /// ledger that is not on disk. It must be visible, not swallowed.
+    @ViewBuilder
+    private var saveErrorSection: some View {
+        if let saveError {
+            Section {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.octagon.fill")
+                        .foregroundStyle(Color.red)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("The ledger could not be saved")
+                            .font(.subheadline.weight(.medium))
+                        Text(saveError)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("Nothing is lost — the raw journal is intact and this will be "
+                             + "retried the next time the app opens.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .listRowBackground(Color.red.opacity(0.10))
+        }
     }
 
     // MARK: - Freshness
@@ -181,7 +210,11 @@ private struct TxnRow: View {
     }
 
     private var subtitle: String {
-        var parts = ["••\(txn.cardLast4)", txn.occurredAt.formatted(date: .abbreviated, time: .shortened)]
+        // Labelled "Alerted", not left bare: the message carries no timestamp of its own, so
+        // this is when the text ARRIVED. If alerts batch — phone off overnight, a dozen
+        // delivered at once — a bare time would read as the transaction time and look wrong.
+        let when = txn.occurredAt.formatted(date: .abbreviated, time: .shortened)
+        var parts = ["••\(txn.cardLast4)", "Alerted \(when)"]
         if txn.possibleDuplicate { parts.append("possible duplicate") }
         return parts.joined(separator: " · ")
     }

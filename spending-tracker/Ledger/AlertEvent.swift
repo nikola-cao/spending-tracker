@@ -38,17 +38,39 @@ final class AlertEvent {
     var uuid: UUID = UUID()
 
     /// When the Shortcut handed us the message. The alert text carries no timestamp of its
-    /// own, so this is the only time we have — it is the transaction time.
+    /// own, so this is the only time we have.
     var receivedAt: Date = Date()
+
+    /// The journal invocation that produced this event. Both lines of an `enter`/`result`
+    /// pair share it.
+    var runID: UUID = UUID()
+
+    /// Which alert within that invocation. One message can carry more than one.
+    var matchIndex: Int = 0
 
     /// Verbatim. Never normalised, never parsed in place.
     var body: String = ""
 
-    /// SHA-256 of `body`. The real dedup key. A plain indexed String, never `.unique`.
+    /// SHA-256 of `body`. Retained for cross-referencing and debugging. **Not the dedup
+    /// key** — see `occurrenceKey`.
     var contentHash: String = ""
+
+    /// **The dedup key.** `"<runID>#<matchIndex>"`.
+    ///
+    /// Deliberately an *occurrence* identity rather than a *message* identity, because the
+    /// message is not unique per transaction. A Fidelity body is a pure function of
+    /// (card, amount, merchant) — it carries no transaction id, no sequence, no timestamp —
+    /// so a monthly $15.49 at NETFLIX.COM produces a byte-identical string every month. Keyed
+    /// on the body, the second month onward was silently dropped: no row, no review entry,
+    /// nothing. Keyed on the invocation, a redelivery collapses (the pair shares a `runID`)
+    /// while a genuine repeat is recorded, and near-duplicates are caught by
+    /// `Txn.possibleDuplicate`, which *flags* instead of discarding.
+    var occurrenceKey: String = ""
 
     var parseStateRaw: String = AlertParseState.needsReview.rawValue
 
+    /// The parser version that last looked at this body. Consulted by the drain so a parser
+    /// fix actually repairs history rather than being inert.
     var parserVersion: Int = 0
 
     /// nil when the body did not resolve to a charge. Cascades, so deleting the event
@@ -58,14 +80,19 @@ final class AlertEvent {
 
     init(
         receivedAt: Date,
+        runID: UUID,
+        matchIndex: Int,
         body: String,
         contentHash: String,
         parseState: AlertParseState,
         parserVersion: Int
     ) {
         self.receivedAt = receivedAt
+        self.runID = runID
+        self.matchIndex = matchIndex
         self.body = body
         self.contentHash = contentHash
+        self.occurrenceKey = "\(runID.uuidString)#\(matchIndex)"
         self.parseStateRaw = parseState.rawValue
         self.parserVersion = parserVersion
     }

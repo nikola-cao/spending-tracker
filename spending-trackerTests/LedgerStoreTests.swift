@@ -23,18 +23,14 @@ struct LedgerStoreTests {
             .appending(path: "journal.jsonl", directoryHint: .notDirectory)
     }
 
-    /// Mirrors what `LogTransactionIntent` writes: an `enter`/`result` pair per alert, both
-    /// carrying the same body.
-    private func writeJournal(_ bodies: [String], to url: URL) throws {
-        for body in bodies {
-            let runID = UUID()
-            try JournalStore.append(.diagnostic(runID: runID, phase: "enter", raw: body, note: ""), to: url)
-            try JournalStore.append(.diagnostic(runID: runID, phase: "result", raw: body, note: "ok"), to: url)
-        }
+    /// Writes one alert the way `LogTransactionIntent` does: an `enter`/`result` pair sharing
+    /// a single `runID`. The runID is the occurrence identity the ledger dedupes on, so tests
+    /// control it explicitly.
+    private func appendAlert(_ body: String, runID: UUID = UUID(), to url: URL) throws {
+        try JournalStore.append(.diagnostic(runID: runID, phase: "enter", raw: body, note: ""), to: url)
+        try JournalStore.append(.diagnostic(runID: runID, phase: "result", raw: body, note: "ok"), to: url)
     }
 
-    /// The container is held by the test as well as the store, so assertions can read what
-    /// was actually persisted rather than trusting the store's own counters.
     private func makeStore() throws -> (ledger: LedgerStore, container: ModelContainer, url: URL) {
         let container = try ModelContainer(
             for: Schema([AlertEvent.self, Txn.self]),
@@ -52,26 +48,62 @@ struct LedgerStoreTests {
         (try? container.mainContext.fetch(FetchDescriptor<AlertEvent>())) ?? []
     }
 
-    // MARK: - The happy path
+    // MARK: - The regression that motivated occurrence-keyed dedup
 
-    @Test func oneAlertBecomesOneEventAndOneTransaction() throws {
+    /// A Fidelity body is a pure function of (card, amount, merchant) — no transaction id, no
+    /// timestamp — so a monthly subscription produces a byte-identical string every month.
+    /// Deduping on the body recorded the first month and silently discarded every one after.
+    @Test func theSameChargeRepeatedIsRecordedEveryTime() throws {
         let (ledger, container, url) = try makeStore()
-        try writeJournal([charge("2.50", "BREEZE*00HS5MV")], to: url)
+        let body = charge("15.49", "NETFLIX.COM")
+
+        // Three separate invocations, identical bodies — one per month.
+        for _ in 0..<3 {
+            try appendAlert(body, to: url)
+        }
+
+        ledger.drain()
+
+        #expect(txns(container).count == 3, "a repeat charge must never be treated as a redelivery")
+    }
+
+    /// The other half of the same coin: a redelivery of ONE alert — the enter/result pair —
+    /// must still collapse to a single row.
+    @Test func theEnterResultPairCollapsesToOneRow() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
 
         let result = ledger.drain()
 
-        // Two journal lines (enter + result) collapse to ONE event — they carry the same
-        // body, which is exactly why the hash is taken over the raw text.
-        #expect(result.recordsRead == 2)
-        #expect(result.eventsAdded == 1)
-        #expect(result.transactionsAdded == 1)
-        #expect(events(container).count == 1)
+        #expect(result.recordsRead == 2, "the pair is two journal lines")
+        #expect(result.eventsAdded == 1, "but one alert")
         #expect(txns(container).count == 1)
     }
 
+    // MARK: - One body, more than one alert
+
+    /// Bodies have been observed carrying two alerts concatenated with no separator. The
+    /// parser finds both; the ledger must not quietly keep only the first.
+    @Test func aBodyCarryingTwoAlertsProducesTwoTransactions() throws {
+        let (ledger, container, url) = try makeStore()
+        let body = charge("36.00", "Georgia Tech Parking S") + charge("73.00", "CENTRAL ROCK MID (ATL)")
+        try appendAlert(body, to: url)
+
+        ledger.drain()
+
+        let stored = txns(container)
+        #expect(stored.count == 2)
+        #expect(Set(stored.map(\.amountMinor)) == [3600, 7300])
+        #expect(events(container).count == 2)
+        #expect(Set(events(container).map(\.matchIndex)) == [0, 1])
+    }
+
+    // MARK: - The happy path
+
     @Test func amountAndMerchantSurviveTheWholePipeline() throws {
         let (ledger, container, url) = try makeStore()
-        try writeJournal([charge("1,204.99", "AT&T*WIRELESS PMT")], to: url)
+        try appendAlert(charge("1,204.99", "AT&T*WIRELESS PMT"), to: url)
+
         ledger.drain()
 
         let stored = try #require(txns(container).first)
@@ -86,7 +118,8 @@ struct LedgerStoreTests {
     /// Every foreground re-runs the drain, so repeating it must change nothing.
     @Test func drainIsIdempotent() throws {
         let (ledger, container, url) = try makeStore()
-        try writeJournal([charge("2.50", "A"), charge("31.79", "B")], to: url)
+        try appendAlert(charge("2.50", "A"), to: url)
+        try appendAlert(charge("31.79", "B"), to: url)
 
         let first = ledger.drain()
         #expect(first.eventsAdded == 2)
@@ -100,14 +133,16 @@ struct LedgerStoreTests {
 
     @Test func drainingAnEmptyJournalIsHarmless() throws {
         let (ledger, _, _) = try makeStore()
-        #expect(ledger.drain() == LedgerStore.DrainResult())
+        let result = ledger.drain()
+        #expect(result.eventsAdded == 0)
+        #expect(result.saveError == nil)
     }
 
     // MARK: - What must NOT reach the ledger
 
     @Test func unreadableBodyKeepsTheEventButDerivesNoTransaction() throws {
         let (ledger, container, url) = try makeStore()
-        try writeJournal(["Your Uber code is 1234"], to: url)
+        try appendAlert("Your Uber code is 1234", to: url)
 
         let result = ledger.drain()
 
@@ -123,8 +158,8 @@ struct LedgerStoreTests {
 
     @Test func nonChargeVerbIsKeptForReviewAndNotLedgered() throws {
         let (ledger, container, url) = try makeStore()
-        try writeJournal(
-            ["Fidelity\u{00AE} Credit Card: Your card ending in 7224 was declined $12.00 at AMAZON.COM*MK1A2B3C4." + trailer],
+        try appendAlert(
+            "Fidelity\u{00AE} Credit Card: Your card ending in 7224 was declined $12.00 at AMAZON.COM*MK1A2B3C4." + trailer,
             to: url
         )
 
@@ -132,7 +167,7 @@ struct LedgerStoreTests {
 
         // It parses, but it is not a charge, so it must not reach the ledger. That invariant —
         // "Txn contains only charges" — is what lets the feed query need no predicate, and a
-        // forgotten predicate is how unparsed rows would silently pollute a total.
+        // forgotten predicate is how an unparsed row would silently pollute a total.
         #expect(result.needsReview == 1)
         #expect(result.transactionsAdded == 0)
         #expect(txns(container).isEmpty)
@@ -142,7 +177,8 @@ struct LedgerStoreTests {
     /// That record must not become an event.
     @Test func emptyBodiesAreSkippedEntirely() throws {
         let (ledger, container, url) = try makeStore()
-        try writeJournal(["", "   "], to: url)
+        try appendAlert("", to: url)
+        try appendAlert("   ", to: url)
 
         let result = ledger.drain()
 
@@ -150,17 +186,57 @@ struct LedgerStoreTests {
         #expect(events(container).isEmpty)
     }
 
+    // MARK: - Replay
+
+    /// "The raw text is kept so a parser fix can recover these" is only true if something
+    /// actually re-reads it. The occurrence guard skips any event already recorded, so
+    /// without the version check a failed parse would stay failed forever.
+    @Test func anEventLeftByAnOlderParserIsReDerived() throws {
+        let (ledger, container, _) = try makeStore()   // no journal on purpose: see below
+        let body = charge("2.50", "BREEZE*00HS5MV")
+
+        // Stand in for an event the previous parser could not read.
+        let stale = AlertEvent(
+            receivedAt: Date(),
+            runID: UUID(),
+            matchIndex: 0,
+            body: body,
+            contentHash: LedgerStore.contentHash(body),
+            parseState: .needsReview,
+            parserVersion: FidelityAlertParser.version - 1
+        )
+        container.mainContext.insert(stale)
+        try container.mainContext.save()
+        #expect(txns(container).isEmpty)
+
+        // No journal at all — reprocessing must not depend on one.
+        let result = ledger.drain()
+
+        #expect(result.repaired == 1)
+        #expect(txns(container).count == 1)
+        #expect(events(container).first?.parserVersion == FidelityAlertParser.version)
+        #expect(events(container).first?.parseState == .parsed)
+    }
+
+    @Test func anEventAlreadyCurrentIsNotReprocessed() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert("Your Uber code is 1234", to: url)
+        ledger.drain()
+
+        // Current version, still unparseable — reprocessing must not spin on it forever.
+        let result = ledger.drain()
+        #expect(result.repaired == 0)
+        #expect(txns(container).isEmpty)
+    }
+
     // MARK: - Duplicates
 
     @Test func aNearIdenticalChargeIsFlaggedButNeverMerged() throws {
         let (ledger, container, url) = try makeStore()
-        // Two DIFFERENT bodies (so different hashes) describing the same card, amount and
-        // merchant. A byte-identical redelivery is already dropped by the hash; this is the
-        // pair the hash cannot catch.
-        try writeJournal([
-            charge("2.50", "BREEZE*00HS5MV"),
-            "Fidelity\u{00AE} Credit Card: Your card ending in 7224 was charged $2.50 at BREEZE*00HS5MV.",
-        ], to: url)
+        // Two separate invocations describing the same card, amount and merchant moments
+        // apart. Both are kept; one is labelled.
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
+        try appendAlert("Fidelity\u{00AE} Credit Card: Your card ending in 7224 was charged $2.50 at BREEZE*00HS5MV.", to: url)
 
         ledger.drain()
 
@@ -171,11 +247,9 @@ struct LedgerStoreTests {
 
     @Test func distinctChargesAreNotFlagged() throws {
         let (ledger, container, url) = try makeStore()
-        try writeJournal([
-            charge("2.50", "BREEZE*00HS5MV"),
-            charge("5.30", "DEEPSEERWEA"),
-            charge("2.50", "SOME OTHER MERCHANT"),
-        ], to: url)
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
+        try appendAlert(charge("5.30", "DEEPSEERWEA"), to: url)
+        try appendAlert(charge("2.50", "SOME OTHER MERCHANT"), to: url)
 
         ledger.drain()
 
