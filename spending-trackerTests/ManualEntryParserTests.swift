@@ -72,6 +72,65 @@ struct ManualEntryParserTests {
         }
     }
 
+    // MARK: - Optional fields
+    //
+    // Only a merchant and an amount are required. An empty field means "not given", which is
+    // deliberately a different thing from a field that is present but wrong.
+
+    @Test func theDateMayBeOmitted() throws {
+        let line = ManualEntryParser.compose(
+            merchant: "PUBLIX", amount: "14.20", date: nil, cardSuffix: "7224")
+
+        let alert = try #require(ManualEntryParser.parseFirst(line))
+
+        // No date of its own, so the ledger falls back to the moment the entry was made — the
+        // same fallback a Fidelity alert gets, since that carries no date either.
+        #expect(alert.occurredAt == nil)
+        #expect(alert.amountMinor == 1420)
+        #expect(alert.merchant == "PUBLIX")
+    }
+
+    @Test func theCardMayBeOmitted() throws {
+        let line = ManualEntryParser.compose(
+            merchant: "PUBLIX", amount: "14.20", date: day, cardSuffix: "")
+
+        let alert = try #require(ManualEntryParser.parseFirst(line))
+
+        #expect(alert.cardSuffix == "")
+        #expect(alert.amountMinor == 1420)
+    }
+
+    @Test func bothMayBeOmittedAtOnce() throws {
+        let line = ManualEntryParser.compose(
+            merchant: "PUBLIX", amount: "14.20", date: nil, cardSuffix: "")
+
+        let alert = try #require(ManualEntryParser.parseFirst(line))
+
+        #expect(alert.occurredAt == nil)
+        #expect(alert.cardSuffix == "")
+        #expect(alert.merchant == "PUBLIX")
+    }
+
+    /// A blank date must still occupy its slot. `omittingEmptySubsequences: false` is what
+    /// stops the card sliding left into the date position.
+    @Test func anOmittedDateStillOccupiesItsField() {
+        let line = ManualEntryParser.compose(
+            merchant: "PUBLIX", amount: "14.20", date: nil, cardSuffix: "7224")
+        #expect(line == "Manual | 14.20 |  | 7224 | PUBLIX")
+    }
+
+    /// The distinction that matters: absent is fine, malformed is not. Treating an unreadable
+    /// date as merely absent would quietly turn a typo into a charge dated today.
+    @Test func aMalformedDateIsRejected() {
+        #expect(ManualEntryParser.parseAll("Manual | 14.20 | 23/09/2026 | 7224 | PUBLIX").isEmpty)
+        #expect(ManualEntryParser.parseAll("Manual | 14.20 | yesterday | 7224 | PUBLIX").isEmpty)
+    }
+
+    @Test func aMerchantAndAnAmountAreStillRequired() {
+        #expect(ManualEntryParser.parseAll("Manual |  | 2026-09-23 | 7224 | PUBLIX").isEmpty)
+        #expect(ManualEntryParser.parseAll("Manual | 14.20 | 2026-09-23 | 7224 | ").isEmpty)
+    }
+
     // MARK: - Card digits
 
     @Test(arguments: ["1234", "12345"])

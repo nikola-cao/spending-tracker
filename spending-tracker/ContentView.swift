@@ -237,7 +237,11 @@ private struct TxnRow: View {
             when = txn.occurredAt.formatted(date: .abbreviated, time: .shortened)
             label = "Alerted"
         }
-        var parts = ["••\(txn.cardSuffix)", "\(label) \(when)"]
+        var parts: [String] = []
+        // A charge may have no card at all — a hand-entered one where the card was left blank
+        // — so the bullet is omitted rather than shown with nothing after it.
+        if !txn.cardSuffix.isEmpty { parts.append("••\(txn.cardSuffix)") }
+        parts.append("\(label) \(when)")
         if txn.possibleDuplicate { parts.append("possible duplicate") }
         return parts.joined(separator: " · ")
     }

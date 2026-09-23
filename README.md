@@ -97,15 +97,25 @@ looks like a bug in the app rather than a failed write. There is a test for exac
 ## Adding a charge by hand
 
 The **+** button opens a form: merchant, amount, purchase date, and the card's last digits.
-The card field is both a text input and a menu of every suffix captured so far — typing covers
-a card never seen before, the menu covers the common case in one tap. The digits must be four
-or five, ASCII only.
+
+**Only the merchant and the amount are required.** The date has a toggle that hides the picker
+without changing how a date is chosen when it is on; leaving it off gives the charge no time of
+its own, so the ledger falls back to when the entry was made and the row reads "Alerted" rather
+than "Purchased". The card field is both a text input and a menu of every suffix captured so
+far — typing covers a card never seen before, the menu covers the common case in one tap. A
+card that *is* filled in must be four or five ASCII digits, and typing past five simply stops
+appearing rather than being accepted and then refused on save.
+
+An empty field means "not given", which is deliberately not the same as a field that is present
+but wrong: a blank date is fine, but `23/09/2026` is rejected outright. Treating an unreadable
+date as merely absent would quietly turn a typo into a charge dated today.
 
 The form does **not** write a row straight into the store. It composes the fields into a
 canonical line and journals it, exactly as a captured alert is journalled:
 
 ```
 Manual | <amount> | <yyyy-MM-dd> | <cardSuffix> | <merchant>
+           required    optional      optional     required
 ```
 
 `ManualEntryParser` reads it back on the next drain. That is more work than writing the row

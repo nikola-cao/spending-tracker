@@ -23,6 +23,10 @@ struct ManualEntryView: View {
 
     @State private var merchant = ""
     @State private var amount = ""
+    /// The date is optional, but the way it is *chosen* is unchanged — the toggle only decides
+    /// whether the picker applies. Leaving it off gives the charge no time of its own, so the
+    /// ledger falls back to when the entry was made.
+    @State private var hasDate = true
     @State private var date = Date()
     @State private var cardSuffix = ""
     @State private var knownCards: [String] = []
@@ -64,7 +68,10 @@ struct ManualEntryView: View {
                 .autocorrectionDisabled()
             TextField("Amount", text: $amount)
                 .keyboardType(.decimalPad)
-            DatePicker("Purchase date", selection: $date, displayedComponents: .date)
+            Toggle("Set a purchase date", isOn: $hasDate)
+            if hasDate {
+                DatePicker("Purchase date", selection: $date, displayedComponents: .date)
+            }
         }
     }
 
@@ -73,6 +80,14 @@ struct ManualEntryView: View {
             HStack(spacing: 12) {
                 TextField("Last 4 or 5 digits", text: $cardSuffix)
                     .keyboardType(.numberPad)
+                    .onChange(of: cardSuffix) { _, newValue in
+                        // Extra characters simply never appear, rather than being accepted and
+                        // then rejected on save. Non-digits go too: the numeric keypad makes
+                        // them unlikely, but a paste can still bring them in.
+                        let digits = newValue.filter { $0.isASCII && $0.isNumber }
+                        let capped = String(digits.prefix(ManualEntryParser.maximumCardDigits))
+                        if capped != newValue { cardSuffix = capped }
+                    }
 
                 // The same value, two ways in: typing covers a card that has never been seen
                 // before, and the menu covers the common case in one tap.
@@ -96,11 +111,11 @@ struct ManualEntryView: View {
     private var cardFooter: String {
         let range = "\(ManualEntryParser.minimumCardDigits) to "
             + "\(ManualEntryParser.maximumCardDigits) digits"
-        guard !knownCards.isEmpty else {
-            return "Digits only, \(range). No cards captured yet, so type one."
+        var text = "Optional. Digits only, \(range)."
+        if !knownCards.isEmpty {
+            text += " Previously used: " + knownCards.joined(separator: ", ") + "."
         }
-        return "Digits only, \(range). Or pick one already seen: "
-            + knownCards.joined(separator: ", ") + "."
+        return text
     }
 
     @ViewBuilder
@@ -144,9 +159,11 @@ struct ManualEntryView: View {
         return Money.minorUnits(from: text)
     }
 
+    /// Only the merchant and the amount are required. A card that *is* filled in still has to
+    /// be well-formed — "123" is a mistake, not an omission.
     private var canSave: Bool {
-        !trimmedMerchant.isEmpty && amountMinor != nil
-            && ManualEntryParser.isValidCardSuffix(trimmedCard)
+        guard !trimmedMerchant.isEmpty, amountMinor != nil else { return false }
+        return trimmedCard.isEmpty || ManualEntryParser.isValidCardSuffix(trimmedCard)
     }
 
     // MARK: - Saving
@@ -158,9 +175,10 @@ struct ManualEntryView: View {
             outcome = .failed("Enter an amount like 12.34")
             return
         }
-        guard ManualEntryParser.isValidCardSuffix(trimmedCard) else {
+        guard trimmedCard.isEmpty || ManualEntryParser.isValidCardSuffix(trimmedCard) else {
             outcome = .failed("Card must be \(ManualEntryParser.minimumCardDigits) to "
-                              + "\(ManualEntryParser.maximumCardDigits) digits, numbers only")
+                              + "\(ManualEntryParser.maximumCardDigits) digits, numbers only, "
+                              + "or left blank")
             return
         }
         guard !trimmedMerchant.isEmpty else {
@@ -174,7 +192,8 @@ struct ManualEntryView: View {
                 // The canonical decimal, not what was typed: the journal line has to be
                 // re-readable regardless of how the amount was written.
                 amount: Money.decimalString(fromMinor: minor),
-                date: date,
+                // Nil when the date was switched off — which is not the same as "today".
+                date: hasDate ? date : nil,
                 cardSuffix: trimmedCard
             )
         } catch {

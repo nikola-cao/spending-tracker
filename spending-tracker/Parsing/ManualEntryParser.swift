@@ -28,9 +28,14 @@ import Foundation
 /// The merchant is **last** on purpose. It is free text a person typed, so it may legitimately
 /// contain anything — including the delimiter — and putting it at the end means everything
 /// after the fourth field is the merchant, with nothing to escape or reject.
+///
+/// The date and the card are both **optional**: an empty field means "not given", which is
+/// different from a field that is present but wrong. A blank date leaves `occurredAt` nil and
+/// the ledger falls back to the moment the entry was made — the same fallback the Fidelity SMS
+/// uses, since that carries no date either. A blank card simply leaves the charge without one.
 nonisolated enum ManualEntryParser {
 
-    static let version = 1
+    static let version = 2
 
     /// The leading token that identifies a line as hand-entered. Chosen to read plainly in the
     /// raw journal, where a person may be looking straight at it.
@@ -59,13 +64,13 @@ nonisolated enum ManualEntryParser {
     static func compose(
         merchant: String,
         amount: String,
-        date: Date,
+        date: Date?,
         cardSuffix: String
     ) -> String {
         let fields = [
             prefix,
             amount.trimmingCharacters(in: .whitespacesAndNewlines),
-            dateFormatter.string(from: date),
+            date.map { dateFormatter.string(from: $0) } ?? "",
             cardSuffix.trimmingCharacters(in: .whitespacesAndNewlines),
             merchant.trimmingCharacters(in: .whitespacesAndNewlines),
         ]
@@ -90,9 +95,8 @@ nonisolated enum ManualEntryParser {
     static func parseFirst(_ text: String) -> ParsedAlert? { parseAll(text).first }
 
     private static func parse(_ line: String) -> ParsedAlert? {
-        // `omittingEmptySubsequences: false` so a merchant that happens to be blank still
-        // yields five fields and is then rejected on its own merits, rather than silently
-        // shifting the date into the merchant slot.
+        // `omittingEmptySubsequences: false` so blank optional fields still yield five parts,
+        // rather than silently shifting the card into the date slot.
         let fields = line
             .split(separator: "|", maxSplits: 4, omittingEmptySubsequences: false)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -100,30 +104,40 @@ nonisolated enum ManualEntryParser {
         guard fields.count == 5,
               fields[0].lowercased() == prefix.lowercased(),
               let amountMinor = Money.minorUnits(from: fields[1]),
-              let date = dateFormatter.date(from: fields[2]),
-              isValidCardSuffix(fields[3]),
               !fields[4].isEmpty
         else { return nil }
+
+        // A date that is ABSENT is fine; a date that is present but unreadable is not. Falling
+        // back to "no date" there would quietly turn a typo into a charge dated today.
+        var occurredAt: Date?
+        if !fields[2].isEmpty {
+            guard let day = dateFormatter.date(from: fields[2]) else { return nil }
+            // A date and no time, so noon — the same convention the Amex parser uses, and for
+            // the same reason: a later timezone shift must not drag the row onto the day before.
+            occurredAt = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: day)
+        }
+
+        let cardSuffix = fields[3]
+        guard cardSuffix.isEmpty || isValidCardSuffix(cardSuffix) else { return nil }
 
         return ParsedAlert(
             kind: .charge,
             amountMinor: amountMinor,
             currencyCode: "USD",
-            cardSuffix: fields[3],
+            cardSuffix: cardSuffix,
             merchant: fields[4],
             rawVerb: "charged",
-            // The typed date is a date and not a time, so noon — the same convention the Amex
-            // parser uses, and for the same reason: a later timezone shift must not drag the
-            // row onto the previous day. The feed will label it "Purchased".
-            occurredAt: Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: date),
+            occurredAt: occurredAt,
             parserVersion: version
         )
     }
 
-    /// At least four digits and at most five, and nothing but digits.
+    /// At least four digits and at most five, and nothing but ASCII digits.
     ///
     /// The form enforces this too, but the check lives here as well: the journal is a text
     /// file, and a line can reach this parser without ever having passed through the form.
+    /// An empty value is *not* valid here — callers that allow an absent card test for empty
+    /// separately, so that "not given" and "given but wrong" stay distinguishable.
     static func isValidCardSuffix(_ value: String) -> Bool {
         guard value.count >= minimumCardDigits, value.count <= maximumCardDigits else { return false }
         // ASCII digits specifically. `Character.isNumber` is true for full-width and other

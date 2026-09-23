@@ -239,11 +239,14 @@ final class LedgerStore {
     /// captured charge — same drain, same retention, same deletion behaviour — and can be
     /// re-read on any later launch. See `ManualEntryParser` for the format and the reason it
     /// is a text line rather than a row written straight into the store.
+    /// `date` and `cardSuffix` are optional: only a merchant and an amount are required. A nil
+    /// date leaves the charge with no time of its own, so the ledger falls back to the moment
+    /// the entry was made — exactly what it does for a Fidelity alert, which carries no date.
     @discardableResult
     func appendManualCharge(
         merchant: String,
         amount: String,
-        date: Date,
+        date: Date?,
         cardSuffix: String
     ) throws -> UUID {
         try appendManualEntry(

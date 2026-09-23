@@ -628,6 +628,21 @@ struct LedgerStoreTests {
         #expect(txns(freshContainer).first?.merchant == "HAND TYPED")
     }
 
+    @Test func aManualChargeNeedsOnlyAMerchantAndAnAmount() throws {
+        let (ledger, container, _) = try makeStore()
+        try ledger.appendManualCharge(
+            merchant: "NO CARD NO DATE", amount: "5.00", date: nil, cardSuffix: "")
+        ledger.drain()
+
+        let stored = try #require(txns(container).first)
+        #expect(stored.merchant == "NO CARD NO DATE")
+        #expect(stored.amountMinor == 500)
+        #expect(stored.cardSuffix == "")
+        // No date of its own, so it takes the arrival time — and the feed will label it
+        // "Alerted" rather than "Purchased", which is honest about what is actually known.
+        #expect(stored.occurredAtIsFromMessage == false)
+    }
+
     @Test func knownCardsComeFromWhatWasActuallyCaptured() throws {
         let (ledger, _, url) = try makeStore()
         try appendAlert(charge("2.50", "A", last4: "7224"), to: url)
