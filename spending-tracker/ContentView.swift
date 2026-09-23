@@ -196,8 +196,11 @@ struct ContentView: View {
         Section {
             ForEach(unresolved) { event in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(event.body)
-                        .font(.footnote.monospaced())
+                    // Extracted, not raw. An email body is a 50 KB HTML document, and showing
+                    // it verbatim buries the one line a person needs to read. The raw text is
+                    // still in the journal, which is where it matters.
+                    Text(HTMLText.extract(from: event.body))
+                        .font(.footnote)
                         .lineLimit(4)
                     Text(event.receivedAt, format: .dateTime.month().day().hour().minute())
                         .font(.caption2)
@@ -237,11 +240,23 @@ private struct TxnRow: View {
     }
 
     private var subtitle: String {
-        // Labelled "Alerted", not left bare: the message carries no timestamp of its own, so
-        // this is when the text ARRIVED. If alerts batch — phone off overnight, a dozen
-        // delivered at once — a bare time would read as the transaction time and look wrong.
-        let when = txn.occurredAt.formatted(date: .abbreviated, time: .shortened)
-        var parts = ["••\(txn.cardLast4)", "Alerted \(when)"]
+        // Labelled by WHERE the time came from, because the two are different claims and a
+        // bare timestamp reads as the transaction time either way. Amex prints a real date;
+        // the Fidelity SMS carries none, so there it can only be arrival — and arrival is a
+        // weaker signal for email, which Apple Mail fetches on a schedule rather than by push.
+        // A date-only source shows a date only. Printing "at 12:00 AM" would invent a time the
+        // message never stated, which is exactly the kind of plausible-looking wrong detail
+        // this project keeps refusing to make up.
+        let when: String
+        let label: String
+        if txn.occurredAtIsFromMessage {
+            when = txn.occurredAt.formatted(.dateTime.month(.abbreviated).day().year())
+            label = "Purchased"
+        } else {
+            when = txn.occurredAt.formatted(date: .abbreviated, time: .shortened)
+            label = "Alerted"
+        }
+        var parts = ["••\(txn.cardSuffix)", "\(label) \(when)"]
         if txn.possibleDuplicate { parts.append("possible duplicate") }
         return parts.joined(separator: " · ")
     }

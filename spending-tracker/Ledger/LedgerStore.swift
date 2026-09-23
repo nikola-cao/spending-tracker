@@ -16,8 +16,8 @@ import SwiftData
 /// reasons that is the better design, not a shortcut:
 ///
 /// 1. The intent is the one component *proven on real hardware* — a locked phone in a pocket,
-///    iOS 27, `allowedExecutionTargets = .main`. Nothing in Stage 3 needs to touch it, so
-///    nothing in Stage 3 can break it.
+///    iOS 27, `allowedExecutionTargets = .main`. Nothing downstream needs to touch it, so
+///    nothing downstream can break it.
 /// 2. Writing to the ledger at capture time buys nothing. The UI only exists while the app is
 ///    open, so a row written at 2pm and drained at 6pm is indistinguishable from one written
 ///    at 2pm — you could not have seen it either way.
@@ -26,6 +26,9 @@ import SwiftData
 ///    same store.
 ///
 /// The journal stays the source of truth. The store is *derived* and can be rebuilt from it.
+///
+/// Adding a second source (Amex email) required no change to this shape at all: a source is a
+/// parser, and the journal does not care where a body came from.
 @MainActor
 final class LedgerStore {
 
@@ -100,7 +103,7 @@ final class LedgerStore {
             // One body can carry more than one alert — bodies have been observed concatenated
             // with no separator. `nil` stands for "nothing recognisable here", so a body that
             // parses to nothing still becomes an event and its raw text is kept for review.
-            let parsed = FidelityAlertParser.parseAll(body)
+            let parsed = AlertParsers.parseAll(body)
             let matches: [ParsedAlert?] = parsed.isEmpty ? [nil] : parsed
 
             for (index, alert) in matches.enumerated() {
@@ -118,7 +121,7 @@ final class LedgerStore {
                     body: body,
                     contentHash: Self.contentHash(body),
                     parseState: .needsReview,
-                    parserVersion: FidelityAlertParser.version
+                    parserVersion: AlertParsers.version
                 )
                 context.insert(event)
                 result.eventsAdded += 1
@@ -128,7 +131,7 @@ final class LedgerStore {
                     continue
                 }
 
-                let txn = Txn(from: alert, occurredAt: record.receivedAt)
+                let txn = Txn(from: alert, receivedAt: record.receivedAt)
                 // Computed BEFORE the row is inserted or wired up, so the fetch cannot see it.
                 txn.possibleDuplicate = hasNearbyEqual(txn, in: context)
                 context.insert(txn)
@@ -146,9 +149,10 @@ final class LedgerStore {
     /// Without this, "the raw text is kept so a parser fix can recover these" is a promise the
     /// code cannot keep: the occurrence guard skips any event already recorded, so an alert
     /// that failed to parse would stay unparsed forever no matter how good the parser became.
-    /// This is what makes the journal genuinely replayable rather than merely retained.
+    /// This is what makes the journal genuinely replayable rather than merely retained — and it
+    /// is what let a second source (Amex) start parsing bodies the first parser had rejected.
     private func reprocessStaleEvents(in context: ModelContext) -> Int {
-        let version = FidelityAlertParser.version
+        let version = AlertParsers.version
         let descriptor = FetchDescriptor<AlertEvent>(
             predicate: #Predicate { $0.transaction == nil && $0.parserVersion < version }
         )
@@ -157,9 +161,9 @@ final class LedgerStore {
         var repaired = 0
         for event in stale {
             event.parserVersion = version
-            guard let alert = FidelityAlertParser.parseFirst(event.body), alert.isCharge else { continue }
+            guard let alert = AlertParsers.parseFirst(event.body), alert.isCharge else { continue }
 
-            let txn = Txn(from: alert, occurredAt: event.receivedAt)
+            let txn = Txn(from: alert, receivedAt: event.receivedAt)
             txn.possibleDuplicate = hasNearbyEqual(txn, in: context)
             context.insert(txn)
             txn.event = event
@@ -185,10 +189,9 @@ final class LedgerStore {
     /// Records a message the user typed or pasted.
     ///
     /// Appends to the **journal**, not the store, deliberately: the text then takes the exact
-    /// path the automation uses, so it is durable, replayable, and cannot drift from the real
-    /// ingest. It also means the whole pipeline can be exercised end to end without waiting
-    /// for a real purchase — which, given no live alert has ever flowed through, is most of
-    /// its value today.
+    /// path a captured alert uses, so it is durable, replayable, and cannot drift from the
+    /// real ingest. It also means the whole pipeline can be exercised end to end without
+    /// waiting for a real purchase.
     @discardableResult
     func appendManualEntry(_ text: String) throws -> UUID {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -223,7 +226,7 @@ final class LedgerStore {
         result.eventCount = (try? context.fetchCount(FetchDescriptor<AlertEvent>())) ?? 0
         result.transactionCount = (try? context.fetchCount(FetchDescriptor<Txn>())) ?? 0
         result.needsReviewCount = result.eventCount - result.transactionCount
-        result.parserVersion = FidelityAlertParser.version
+        result.parserVersion = AlertParsers.version
 
         let records = JournalStore.readAll(from: journalURL)
         result.journalLines = records.count
@@ -249,8 +252,13 @@ final class LedgerStore {
     /// real purchases — the same coffee bought twice this month — and flagging those would
     /// train the flag to be ignored. This is the only place a repeated charge is treated as
     /// suspicious, and it never discards: both rows are kept and one is labelled.
+    ///
+    /// Note this compares `merchant` byte-for-byte, which is only meaningful *within* a
+    /// source. Amex sends an enriched merchant name and Fidelity sends a truncated issuer
+    /// descriptor, so the two can never be equal — two different tools for two different
+    /// problems, and mixing them would be a bug.
     private func hasNearbyEqual(_ txn: Txn, in context: ModelContext) -> Bool {
-        let card = txn.cardLast4
+        let card = txn.cardSuffix
         let amount = txn.amountMinor
         let merchant = txn.merchant
         let from = txn.occurredAt.addingTimeInterval(-Self.duplicateWindow)
@@ -258,7 +266,7 @@ final class LedgerStore {
 
         let descriptor = FetchDescriptor<Txn>(
             predicate: #Predicate { other in
-                other.cardLast4 == card
+                other.cardSuffix == card
                     && other.amountMinor == amount
                     && other.merchant == merchant
                     && other.occurredAt >= from

@@ -31,9 +31,10 @@ private func charge(
         kind: verb == "charged" ? .charge : .unrecognizedVerb,
         amountMinor: amountMinor,
         currencyCode: "USD",
-        cardLast4: last4,
+        cardSuffix: last4,
         merchant: merchant,
         rawVerb: verb,
+        occurredAt: nil,          // the Fidelity SMS carries no timestamp of its own
         parserVersion: FidelityAlertParser.version
     )
 }

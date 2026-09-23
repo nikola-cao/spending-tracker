@@ -32,7 +32,7 @@ import Foundation
 nonisolated enum FidelityAlertParser {
 
     /// Bumped to 2 after an adversarial corpus pass. Stamped on every `ParsedAlert` so rows
-    /// parsed by an older table are identifiable, and history can be replayed after a fix.
+    /// parsed by an older table are identifiable, and history can be re-derived after a fix.
     static let version = 2
 
     /// Kept as data rather than a `Regex` literal so it can be compiled and asserted in a
@@ -47,15 +47,11 @@ nonisolated enum FidelityAlertParser {
     ///   so `\d{4}` would happily capture Arabic-Indic digits as the card number.
     /// * `\$\s*` tolerates a space after the symbol; `\$[0-9]` hard-adjacency loses the
     ///   whole alert over one inserted space.
-    /// * `(?:(?!Fidelity).){1,200}?` is a tempered capture: it refuses to cross into the
-    ///   start of another alert. An unterminated alert's lazy capture would otherwise run
-    ///   forward and swallow the *next* alert whole, losing a well-formed purchase. A plain
-    ///   length cap was tried first and was wrong — a descriptor followed by a long trailing
-    ///   sentence (a call-back lure, a URL footer) pushes the real terminator past any cap
-    ///   small enough to stop the swallow, so capping lost those alerts entirely. The bound
-    ///   at 200 exists only to limit backtracking.
-    ///   The lookahead must be the FULL alert preamble, not the bare word `Fidelity`: the
-    ///   first version blocked on the word alone and therefore refused to cross a trailing
+    /// * `(?:(?!Fidelity\s*[^\s]{0,3}\s*Credit\s+Card:).){1,200}?` is a tempered capture: it
+    ///   refuses to cross into the start of another alert. An unterminated alert's lazy
+    ///   capture would otherwise run forward and swallow the *next* alert whole. The
+    ///   lookahead must be the FULL preamble, not the bare word `Fidelity` — the first
+    ///   version blocked on the word alone and therefore refused to cross a trailing
     ///   `Fidelity.com/alerts` footer, losing the alert entirely.
     static let pattern = #"Fidelity\s*[^\s]{0,3}\s*Credit\s+Card:\s*Your\s+card\s+ending\s+in\s+(?<last4>[0-9]{4})\s+was\s+(?<verb>[A-Za-z]+)\s+\$\s*(?<amount>[0-9][0-9,]*(?:\.[0-9]{2})?)\s+at\s+(?<merchant>(?:(?!Fidelity\s*[^\s]{0,3}\s*Credit\s+Card:).){1,200}?)(?:\.\s*(?:Msg\s*&\s*(?:amp;)?\s*Data|Reply\s+STOP)|\.?\s*$)"#
 
@@ -66,11 +62,6 @@ nonisolated enum FidelityAlertParser {
         // newline and terminate the lazy merchant capture early.
         options: [.caseInsensitive]
     )
-
-    /// A card charge above this is not a real transaction. Capping here is also what makes
-    /// the integer arithmetic below provably overflow-free: the whole part is bounded, so
-    /// `whole * 100` cannot exceed `Int.max` and trap the process.
-    static let maximumAmountMinor = 100_000_000_000   // $1,000,000,000.00
 
     /// Every alert in the string. Empty when nothing matches.
     static func parseAll(_ raw: String) -> [ParsedAlert] {
@@ -94,7 +85,7 @@ nonisolated enum FidelityAlertParser {
     /// than a corrupted field. No newline carries meaning in a one-line alert body.
     static func normalize(_ raw: String) -> String {
         var text = raw
-        for invisible in ["\u{200B}", "\u{200C}", "\u{200D}", "\u{FEFF}", "\u{00AD}"] {
+        for invisible in ["\u{200B}", "\u{200C}", "\u{200D}", "\u{FEFF}", "\u{00AD}", "\u{034F}", "\u{2060}"] {
             text = text.replacingOccurrences(of: invisible, with: "")
         }
         text = text.replacingOccurrences(of: "\r\n", with: " ")
@@ -111,7 +102,7 @@ nonisolated enum FidelityAlertParser {
             let verb = group("verb", match, text),
             let amountText = group("amount", match, text),
             let merchantText = group("merchant", match, text),
-            let amountMinor = minorUnits(from: amountText),
+            let amountMinor = Money.minorUnits(from: amountText),
             let merchant = cleanMerchant(merchantText)
         else { return nil }
 
@@ -120,9 +111,12 @@ nonisolated enum FidelityAlertParser {
             kind: verbLower == "charged" ? .charge : .unrecognizedVerb,
             amountMinor: amountMinor,
             currencyCode: "USD",
-            cardLast4: last4,
+            cardSuffix: last4,
             merchant: merchant,
             rawVerb: verbLower,
+            // The Fidelity SMS carries no timestamp of its own, so the ledger falls back to
+            // the alert's arrival time.
+            occurredAt: nil,
             parserVersion: version
         )
     }
@@ -196,37 +190,5 @@ nonisolated enum FidelityAlertParser {
         guard let first = text.first, !". ,;:!?".contains(first) else { return nil }
 
         return text
-    }
-
-    /// Strict shape: a plain integer, or comma-grouped in threes, with an optional one- or
-    /// two-digit fraction. Anything else is rejected rather than reinterpreted.
-    ///
-    /// The comma rule exists because the old code stripped commas unconditionally. `"2,50"`
-    /// — a decimal comma from any locale-aware hop — then became 25000 minor units: a $2.50
-    /// charge silently journaled as $250.00. Rejecting is the only safe answer, because
-    /// `"1,204"` is genuinely ambiguous between the US thousands reading and the European
-    /// decimal one.
-    private static let amountShape = #"^(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]{1,2})?$"#
-
-    static func minorUnits(from rawAmount: String) -> Int? {
-        guard rawAmount.range(of: amountShape, options: .regularExpression) != nil else { return nil }
-
-        let cleaned = rawAmount.replacingOccurrences(of: ",", with: "")
-        let parts = cleaned.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count <= 2, let whole = Int(parts.first ?? "") else { return nil }
-
-        // Bounded before multiplying, so the arithmetic below cannot overflow and trap.
-        guard whole >= 0, whole <= maximumAmountMinor / 100 else { return nil }
-
-        // No decimal part at all ("$36") means zero cents, not an error.
-        guard parts.count == 2 else { return whole * 100 }
-
-        let fraction = parts[1]
-        guard fraction.count <= 2, let value = Int(fraction) else { return nil }
-        // A single digit means tenths, not hundredths: "$1.5" is 150 cents.
-        let cents = fraction.count == 1 ? value * 10 : value
-        let minor = whole * 100 + cents
-        guard minor <= maximumAmountMinor else { return nil }
-        return minor
     }
 }

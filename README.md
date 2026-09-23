@@ -28,6 +28,8 @@ nothing and stores no transactions yet.
 > **Stage 4 in progress.** Manual entry and the diagnostics surface are done; review-queue
 > actions and statement import are not. See below.
 >
+> **A second source added (2026-09-23).** Amex charges now arrive by email. See below.
+>
 > Note the journal rows so far are synthetic: a real Fidelity alert has not yet flowed
 > end-to-end, though every stage of the path is now individually proven.
 
@@ -137,6 +139,46 @@ Other guards, each one a shape that produced a wrong value before it existed:
 - Non-charge verbs (`refunded`, `declined`) still yield an amount-bearing result, flagged
   as `kind != .charge`. Consumers must filter on `isCharge` rather than assume. Flagging
   beats dropping: a format change should be visible, not silent.
+
+## A second source: Amex email alerts
+
+Amex doesn't offer per-purchase SMS — it moved those to email in September 2023 — so Amex
+arrives through a second Shortcuts automation with an **Email** trigger. It reuses
+everything: same App Intent, same journal, same drain, same ledger. Only the parser is new.
+
+The body is a full HTML document, so `HTMLText` flattens it to line-structured text first.
+`AmexAlertParser` then parses **line-wise rather than with one regex**: the merchant, the
+amount and the date are three *adjacent lines* in a fixed order, so the structure is the
+anchor. The HTML offers nothing else — the amount sits in a bare `<p>` styled by inline CSS,
+and the class names are shared with the boilerplate.
+
+**It is envelope-anchored, and that is load-bearing.** Amex's `There was a large purchase on
+your Card` must be present before anything else is considered. The reason is concrete: the
+Email automation also captures **merchant** confirmation emails, and an Airbnb booking receipt
+and a CinemaPlus ticket receipt each carry the *exact amount* of the Amex alert they pair
+with. A parser that looked for "a dollar amount in some text" would record every online
+purchase **twice**, silently, inflating the total. `theMerchantReceiptsAreRejected` asserts
+both are refused.
+
+Amex prints **five** card digits (`Account Ending: 21008`) where Fidelity prints four, so the
+field is `cardSuffix` and stores what the source gave rather than truncating — which would
+work for today's two cards and collide for someone else's.
+
+Amex also prints a real transaction date and the ledger uses it, where the Fidelity SMS
+carries none and falls back to arrival. Rows therefore read **Purchased** or **Alerted**.
+Arrival is the weaker signal for email in particular, because Apple Mail fetches Gmail on a
+schedule rather than by push.
+
+### Two things about the Amex setup worth knowing
+
+- **The $1 threshold is Amex's floor.** Purchases under $1 alert nothing at all, so the Amex
+  side of the ledger is incomplete by design below that. Unlike Fidelity's threshold, this one
+  cannot be lowered — which is the standing argument for statement import as Amex's eventual
+  ledger of record.
+- **The Email automation catches more than Amex.** Its filter is set to
+  `AmericanExpress@welcome.americanexpress.com`, yet merchant receipts are being captured too.
+  Harmless — the parser refuses them and they land in "not read as a charge" — but the
+  automation is broader than configured, and that list will slowly fill with them.
 
 Everything else is ordinary app work.
 

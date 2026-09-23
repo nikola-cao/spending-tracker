@@ -19,27 +19,45 @@ import SwiftData
 @Model
 final class Txn {
 
-    /// Named `uuid`, not `id` — see the note on `AlertEvent.uuid`.
+    /// Named `uuid`, not `id` — `PersistentModel` already provides `id` as a
+    /// `PersistentIdentifier`, and declaring our own `id` shadows that conformance and breaks
+    /// `ForEach`.
     var uuid: UUID = UUID()
 
     /// Minor units — cents. Never `Decimal` and never `Double`: SwiftData stores `Decimal`
     /// as a SQLite REAL, which loses precision, and a float loses cents outright.
     var amountMinor: Int = 0
 
-    /// Always "USD". The card only ever alerts in dollars, so there is no conversion
+    /// Always "USD". No card here alerts in anything else, so there is no conversion
     /// anywhere; the field exists so a stored row is self-describing rather than relying on
     /// a reader knowing that.
     var currencyCode: String = "USD"
 
-    var cardLast4: String = ""
+    /// The trailing digits of the card **as the source printed them** — four from the Fidelity
+    /// SMS (`ending in 7224`), five from the Amex email (`Account Ending: 21008`). Stored
+    /// verbatim rather than normalised to four, because truncating would eventually make two
+    /// different cards look identical.
+    var cardSuffix: String = ""
 
-    /// The issuer's descriptor, exactly as received — including its truncations, `*` store
-    /// codes, and trailing store numbers. NOT prettified: a display name is a separate,
-    /// later concern, and rewriting this would destroy the only ground truth we have.
+    /// The descriptor exactly as the source sent it — Amex's clean merchant name, or the
+    /// Fidelity issuer's pre-truncated descriptor with its `*` store codes. NOT prettified:
+    /// a display name is a separate, later concern, and rewriting this would destroy the only
+    /// ground truth we have.
     var merchant: String = ""
 
-    /// Alert arrival time. The message carries no timestamp of its own.
+    /// The best-known time of the purchase.
+    ///
+    /// For a source that prints a date (Amex), that date. Otherwise the moment the alert
+    /// arrived. The two are not the same claim, which is why `occurredAtIsFromMessage`
+    /// exists and why the row labels them differently.
     var occurredAt: Date = Date()
+
+    /// True when `occurredAt` came from the message rather than from arrival.
+    ///
+    /// Worth keeping because arrival is a genuinely weaker signal for email: Apple Mail
+    /// fetches Gmail on a schedule instead of by push, so an alert can land well after the
+    /// purchase. Showing that arrival time unlabelled would misstate when the money was spent.
+    var occurredAtIsFromMessage: Bool = false
 
     var parserVersion: Int = 0
 
@@ -53,29 +71,34 @@ final class Txn {
     init(
         amountMinor: Int,
         currencyCode: String,
-        cardLast4: String,
+        cardSuffix: String,
         merchant: String,
         occurredAt: Date,
+        occurredAtIsFromMessage: Bool,
         parserVersion: Int
     ) {
         self.amountMinor = amountMinor
         self.currencyCode = currencyCode
-        self.cardLast4 = cardLast4
+        self.cardSuffix = cardSuffix
         self.merchant = merchant
         self.occurredAt = occurredAt
+        self.occurredAtIsFromMessage = occurredAtIsFromMessage
         self.parserVersion = parserVersion
     }
 }
 
 extension Txn {
     /// Builds a ledger row from a parsed alert.
-    convenience init(from alert: ParsedAlert, occurredAt: Date) {
+    ///
+    /// `receivedAt` is used only when the message carried no date of its own.
+    convenience init(from alert: ParsedAlert, receivedAt: Date) {
         self.init(
             amountMinor: alert.amountMinor,
             currencyCode: alert.currencyCode,
-            cardLast4: alert.cardLast4,
+            cardSuffix: alert.cardSuffix,
             merchant: alert.merchant,
-            occurredAt: occurredAt,
+            occurredAt: alert.occurredAt ?? receivedAt,
+            occurredAtIsFromMessage: alert.occurredAt != nil,
             parserVersion: alert.parserVersion
         )
     }

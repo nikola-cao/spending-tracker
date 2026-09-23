@@ -109,7 +109,7 @@ struct LedgerStoreTests {
         let stored = try #require(txns(container).first)
         #expect(stored.amountMinor == 120499)
         #expect(stored.merchant == "AT&T*WIRELESS PMT")
-        #expect(stored.cardLast4 == "7224")
+        #expect(stored.cardSuffix == "7224")
         #expect(stored.currencyCode == "USD")
         #expect(stored.formattedAmount == "$1,204.99")
         #expect(stored.possibleDuplicate == false)
@@ -203,7 +203,7 @@ struct LedgerStoreTests {
             body: body,
             contentHash: LedgerStore.contentHash(body),
             parseState: .needsReview,
-            parserVersion: FidelityAlertParser.version - 1
+            parserVersion: AlertParsers.version - 1
         )
         container.mainContext.insert(stale)
         try container.mainContext.save()
@@ -214,7 +214,7 @@ struct LedgerStoreTests {
 
         #expect(result.repaired == 1)
         #expect(txns(container).count == 1)
-        #expect(events(container).first?.parserVersion == FidelityAlertParser.version)
+        #expect(events(container).first?.parserVersion == AlertParsers.version)
         #expect(events(container).first?.parseState == .parsed)
     }
 
@@ -318,7 +318,7 @@ struct LedgerStoreTests {
         #expect(diag.eventCount == 2)
         #expect(diag.transactionCount == 1)
         #expect(diag.needsReviewCount == 1)
-        #expect(diag.parserVersion == FidelityAlertParser.version)
+        #expect(diag.parserVersion == AlertParsers.version)
         #expect(diag.journalLines == 4)
         #expect(diag.journalBytes > 0)
     }

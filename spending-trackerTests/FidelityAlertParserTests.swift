@@ -36,10 +36,10 @@ struct FidelityAlertParserTests {
     @Test func amountArithmeticCannotOverflow() {
         let absurd = ["9" + String(repeating: "0", count: 40), "92233720368547759", "99999999999999999999"]
         for value in absurd {
-            #expect(FidelityAlertParser.minorUnits(from: value) == nil, "accepted \(value)")
+            #expect(Money.minorUnits(from: value) == nil, "accepted \(value)")
         }
-        #expect(FidelityAlertParser.minorUnits(from: "1,000,000,000.00") == 100_000_000_000)
-        #expect(FidelityAlertParser.minorUnits(from: "10,000,000,000.00") == nil)
+        #expect(Money.minorUnits(from: "1,000,000,000.00") == 100_000_000_000)
+        #expect(Money.minorUnits(from: "10,000,000,000.00") == nil)
     }
 
     /// Normalisation is what makes a newline survivable, so pin it directly.
@@ -60,12 +60,12 @@ struct FidelityAlertParserTests {
         ("1,000,000.00", 100_000_000),
     ])
     func minorUnitsFromValidAmounts(_ c: (String, Int)) {
-        #expect(FidelityAlertParser.minorUnits(from: c.0) == c.1)
+        #expect(Money.minorUnits(from: c.0) == c.1)
     }
 
     @Test(arguments: ["", "abc", "1.234", "1.2.3", ".", "$"])
     func minorUnitsRejectsMalformed(_ input: String) {
-        #expect(FidelityAlertParser.minorUnits(from: input) == nil)
+        #expect(Money.minorUnits(from: input) == nil)
     }
 
     /// Why money is integer cents and never a binary float.
@@ -77,8 +77,8 @@ struct FidelityAlertParserTests {
     /// passes every test you happen to write and then drops a cent in production.
     @Test func integerCentsBeatDoubleForMoney() {
         #expect(Int(1.15 * 100) == 114)                                // a cent, silently lost
-        #expect(FidelityAlertParser.minorUnits(from: "1.15") == 115)   // exact, always
-        #expect(FidelityAlertParser.minorUnits(from: "1,204.99") == 120499)
+        #expect(Money.minorUnits(from: "1.15") == 115)   // exact, always
+        #expect(Money.minorUnits(from: "1,204.99") == 120499)
     }
 
     /// `parseFirst` must agree with `parseAll` — the ledger will use one and the UI the other.
