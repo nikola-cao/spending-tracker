@@ -26,9 +26,51 @@ struct LedgerStoreTests {
     /// Writes one alert the way `LogTransactionIntent` does: an `enter`/`result` pair sharing
     /// a single `runID`. The runID is the occurrence identity the ledger dedupes on, so tests
     /// control it explicitly.
-    private func appendAlert(_ body: String, runID: UUID = UUID(), to url: URL) throws {
-        try JournalStore.append(.diagnostic(runID: runID, phase: "enter", raw: body, note: ""), to: url)
-        try JournalStore.append(.diagnostic(runID: runID, phase: "result", raw: body, note: "ok"), to: url)
+    ///
+    /// `at` places the alert at a chosen arrival time, which is what the feed sorts on — the
+    /// record is built directly rather than via the `.diagnostic` convenience, which always
+    /// stamps `Date()`.
+    private func appendAlert(
+        _ body: String,
+        runID: UUID = UUID(),
+        at receivedAt: Date = Date(),
+        to url: URL
+    ) throws {
+        for phase in ["enter", "result"] {
+            let record = JournalRecord(
+                id: UUID(),
+                runID: runID,
+                phase: phase,
+                receivedAt: receivedAt,
+                processName: "spending-tracker",
+                bundleIdentifier: "com.nikola.spending-tracker",
+                isMainThread: false,
+                charCount: body.count,
+                utf8ByteCount: body.utf8.count,
+                hasFidelityPrefix: body.hasPrefix("Fidelity"),
+                containsRegisteredTrademark: body.contains("\u{00AE}"),
+                mentionsFidelity: FidelityAlertHeuristic.mentionsFidelity(body),
+                appGroupAvailable: false,
+                journalDirectory: url.deletingLastPathComponent().path,
+                rawText: body,
+                note: phase == "result" ? "ok" : ""
+            )
+            try JournalStore.append(record, to: url)
+        }
+    }
+
+    /// An Amex alert as `HTMLText` would render it. The date is the same in both ordering
+    /// tests on purpose — the whole point is that the message carries no time.
+    private func amexAlert(_ merchant: String, _ amount: String) -> String {
+        """
+        See the details about this purchase
+        Account Ending: 21006
+        There was a large purchase on your Card
+        As you requested, we're letting you know that this purchase was more than $1.00.
+        \(merchant)
+        $\(amount)*
+        Tue, Sep 22, 2026
+        """
     }
 
     private func makeStore() throws -> (ledger: LedgerStore, container: ModelContainer, url: URL) {
@@ -255,6 +297,66 @@ struct LedgerStoreTests {
 
         #expect(txns(container).count == 3)
         #expect(txns(container).filter(\.possibleDuplicate).isEmpty)
+    }
+
+    // MARK: - Feed order
+    //
+    // The feed is a log of what ARRIVED, so it sorts on arrival. Sorting on transaction time
+    // failed two ways at once, both visible on the user's own phone: every Amex row on a given
+    // day shares one parsed date, so same-day Amex rows had identical sort keys and new ones
+    // landed *underneath* older ones; and because Fidelity rows carry real arrival
+    // timestamps, they all floated above every Amex row regardless of what came in first.
+
+    @Test func sameDayAmexChargesStayDistinguishable() throws {
+        let (ledger, container, url) = try makeStore()
+        let base = Date(timeIntervalSince1970: 1_780_000_000)
+
+        try appendAlert(amexAlert("PUBLIX", "14.20"), at: base, to: url)
+        try appendAlert(amexAlert("CINEMAPLUS", "23.85"), at: base.addingTimeInterval(1200), to: url)
+
+        ledger.drain()
+        let stored = txns(container)
+        #expect(stored.count == 2)
+
+        // Both messages print the same date and no time, so their transaction times are
+        // identical and cannot order anything...
+        #expect(stored[0].occurredAt == stored[1].occurredAt)
+
+        // ...arrival can, and does.
+        let byArrival = stored.sorted { $0.receivedAt > $1.receivedAt }
+        #expect(byArrival.first?.merchant == "CINEMAPLUS")
+        #expect(byArrival.last?.merchant == "PUBLIX")
+    }
+
+    @Test func aLaterArrivalSortsAboveRegardlessOfSource() throws {
+        let (ledger, container, url) = try makeStore()
+        let base = Date(timeIntervalSince1970: 1_780_000_000)
+
+        try appendAlert(amexAlert("PUBLIX", "14.20"), at: base, to: url)
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), at: base.addingTimeInterval(60), to: url)
+
+        ledger.drain()
+        let byArrival = txns(container).sorted { $0.receivedAt > $1.receivedAt }
+
+        #expect(byArrival.count == 2)
+        #expect(byArrival.first?.merchant == "BREEZE*00HS5MV")
+        #expect(byArrival.last?.merchant == "PUBLIX")
+    }
+
+    @Test func everyRowRecordsItsArrival() throws {
+        let (ledger, container, url) = try makeStore()
+        let base = Date(timeIntervalSince1970: 1_780_000_000)
+        try appendAlert(amexAlert("PUBLIX", "14.20"), at: base, to: url)
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), at: base, to: url)
+
+        ledger.drain()
+
+        // Arrival is the sort key, so it can never be absent — for either source.
+        for txn in txns(container) {
+            #expect(txn.receivedAt == base)
+        }
+        // Only the source that prints a date gets one.
+        #expect(txns(container).filter(\.occurredAtIsFromMessage).count == 1)
     }
 
     // MARK: - Hashing

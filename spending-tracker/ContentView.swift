@@ -18,7 +18,12 @@ struct ContentView: View {
     /// No predicate. `Txn` holds only parsed charges by construction — an alert that did not
     /// resolve to a charge has no `Txn` at all — so unlike the query below, this cannot
     /// accidentally include something that is not a transaction.
-    @Query(sort: [SortDescriptor(\Txn.occurredAt, order: .reverse)])
+    ///
+    /// Sorted by **arrival**, newest first. The list is a log of what came in, so the order
+    /// has to match the order it was received in. Sorting by transaction time failed that:
+    /// every Amex row on a day shares one parsed date, so same-day rows had identical sort
+    /// keys and new ones landed underneath old ones.
+    @Query(sort: [SortDescriptor(\Txn.receivedAt, order: .reverse)])
     private var transactions: [Txn]
 
     /// Alerts that arrived but did not resolve to a charge: an unparseable body, or a verb

@@ -64,7 +64,17 @@ merging is not.
 
 **The store is derived.** It can be rebuilt from the journal, so a corrupt store is
 recoverable by deleting it and letting the journal replay. The journal is the only thing
-that must never lose a byte.
+that must never lose a byte. `ledgerSchemaVersion` in the app target makes that automatic:
+bump it when a property is renamed or removed and the store is rebuilt on next launch.
+
+**The feed sorts on arrival, not on transaction time.** It is a log of what came in, so the
+order must match the order it was received in. Two things break otherwise, and both were
+visible on the real phone: every Amex row on a day shares one parsed date (the message has no
+time), so same-day rows had *identical* sort keys and new ones landed underneath old ones; and
+because Fidelity rows carry genuine arrival timestamps they all floated above every Amex row
+regardless of which came in first. `Txn.receivedAt` is therefore its own field and
+`Txn.occurredAt` is display-only. The near-duplicate window measures on arrival too — on
+`occurredAt` it would call any two same-day Amex charges at one merchant duplicates.
 
 ## Adding a charge by hand
 

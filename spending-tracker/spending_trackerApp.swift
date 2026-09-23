@@ -36,7 +36,8 @@ struct spending_trackerApp: App {
     /// That is how `cardLast4` → `cardSuffix` left the Fidelity rows showing an empty card
     /// while the Amex rows, drained afterwards, looked fine. Nothing errored and nothing
     /// warned; the ledger simply displayed `··` for half its rows.
-    static let ledgerSchemaVersion = 1
+    /// 2 — added `Txn.receivedAt`, so the feed can sort by arrival.
+    static let ledgerSchemaVersion = 2
 
     private static let schemaVersionKey = "ledgerSchemaVersion"
 

@@ -257,20 +257,25 @@ final class LedgerStore {
     /// source. Amex sends an enriched merchant name and Fidelity sends a truncated issuer
     /// descriptor, so the two can never be equal — two different tools for two different
     /// problems, and mixing them would be a bug.
+    ///
+    /// The window is measured on `receivedAt`, not `occurredAt`. A redelivery arrives seconds
+    /// after the original, which is the thing being detected. Measuring on `occurredAt` would
+    /// be wrong for Amex specifically: every row from one day shares the same parsed date, so
+    /// the window would call any two same-day charges at one merchant duplicates.
     private func hasNearbyEqual(_ txn: Txn, in context: ModelContext) -> Bool {
         let card = txn.cardSuffix
         let amount = txn.amountMinor
         let merchant = txn.merchant
-        let from = txn.occurredAt.addingTimeInterval(-Self.duplicateWindow)
-        let to = txn.occurredAt.addingTimeInterval(Self.duplicateWindow)
+        let from = txn.receivedAt.addingTimeInterval(-Self.duplicateWindow)
+        let to = txn.receivedAt.addingTimeInterval(Self.duplicateWindow)
 
         let descriptor = FetchDescriptor<Txn>(
             predicate: #Predicate { other in
                 other.cardSuffix == card
                     && other.amountMinor == amount
                     && other.merchant == merchant
-                    && other.occurredAt >= from
-                    && other.occurredAt <= to
+                    && other.receivedAt >= from
+                    && other.receivedAt <= to
             }
         )
         return ((try? context.fetchCount(descriptor)) ?? 0) > 0

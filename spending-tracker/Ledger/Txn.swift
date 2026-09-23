@@ -45,11 +45,24 @@ final class Txn {
     /// ground truth we have.
     var merchant: String = ""
 
+    /// When the alert **arrived** — the Shortcut handing it to the app.
+    ///
+    /// This is the feed's sort key. Kept separate from `occurredAt` because the two answer
+    /// different questions, and only this one is always present.
+    ///
+    /// It has to be its own field. Sorting on `occurredAt` meant every Amex row on a given day
+    /// shared one identical value — the message prints a date and no time, so the parsed value
+    /// lands at noon — and identical sort keys leave the order arbitrary, which put new rows
+    /// *underneath* older ones. Arrival order is what the user actually reads the list for.
+    var receivedAt: Date = Date()
+
     /// The best-known time of the purchase.
     ///
     /// For a source that prints a date (Amex), that date. Otherwise the moment the alert
     /// arrived. The two are not the same claim, which is why `occurredAtIsFromMessage`
     /// exists and why the row labels them differently.
+    ///
+    /// Display only — never sort on this.
     var occurredAt: Date = Date()
 
     /// True when `occurredAt` came from the message rather than from arrival.
@@ -73,6 +86,7 @@ final class Txn {
         currencyCode: String,
         cardSuffix: String,
         merchant: String,
+        receivedAt: Date,
         occurredAt: Date,
         occurredAtIsFromMessage: Bool,
         parserVersion: Int
@@ -81,6 +95,7 @@ final class Txn {
         self.currencyCode = currencyCode
         self.cardSuffix = cardSuffix
         self.merchant = merchant
+        self.receivedAt = receivedAt
         self.occurredAt = occurredAt
         self.occurredAtIsFromMessage = occurredAtIsFromMessage
         self.parserVersion = parserVersion
@@ -90,13 +105,15 @@ final class Txn {
 extension Txn {
     /// Builds a ledger row from a parsed alert.
     ///
-    /// `receivedAt` is used only when the message carried no date of its own.
+    /// `occurredAt` falls back to `receivedAt` only when the message carried no date of its
+    /// own — the Fidelity SMS. `receivedAt` is always the arrival, and is what the feed sorts on.
     convenience init(from alert: ParsedAlert, receivedAt: Date) {
         self.init(
             amountMinor: alert.amountMinor,
             currencyCode: alert.currencyCode,
             cardSuffix: alert.cardSuffix,
             merchant: alert.merchant,
+            receivedAt: receivedAt,
             occurredAt: alert.occurredAt ?? receivedAt,
             occurredAtIsFromMessage: alert.occurredAt != nil,
             parserVersion: alert.parserVersion
