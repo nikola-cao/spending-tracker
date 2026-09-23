@@ -246,8 +246,8 @@ struct LedgerStoreTests {
     }
 
     /// The intent journals a rejected empty invocation with a note rather than dropping it.
-    /// That record must not become an event, and must not survive compaction either.
-    @Test func emptyBodiesAreSkippedEntirely() throws {
+    /// That record must not become an event.
+    @Test func emptyBodiesBecomeNoEvent() throws {
         let (ledger, container, url) = try makeStore()
         try appendAlert("", to: url)
         try appendAlert("   ", to: url)
@@ -256,21 +256,36 @@ struct LedgerStoreTests {
 
         #expect(result.eventsAdded == 0)
         #expect(events(container).isEmpty)
-        #expect(JournalStore.readAll(from: url).isEmpty)
     }
 
-    // MARK: - Journal compaction
+    // MARK: - Journal retention
     //
-    // Nothing but charges is kept, so the journal is rewritten to match. The journal is the
-    // one thing in this app that must never lose data, so the properties worth pinning are
-    // that it happens at all, and that it never runs when a write failed.
+    // Charges are kept forever; anything else is held for a week and then purged. The journal
+    // is the one thing in this app that must never lose data, so the properties worth pinning
+    // are that the window is respected in BOTH directions, and that nothing is dropped when a
+    // write failed.
 
-    @Test func theJournalDropsBodiesThatAreNotCharges() throws {
-        let (ledger, _, url) = try makeStore()
-        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)   // 2 lines, kept
-        try appendAlert("Your Uber code is 1234", to: url)           // 2 lines, dropped
+    @Test func aRecentNonChargeIsKept() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
+        try appendAlert("Your Uber code is 1234", to: url)     // not a charge, but recent
 
+        let result = ledger.drain()
+
+        // Nothing is discarded on arrival — the body stays recoverable for a week.
+        #expect(result.journalLinesDropped == 0)
         #expect(JournalStore.readAll(from: url).count == 4)
+        // ...and it still never becomes a ledger row.
+        #expect(result.notCharges == 1)
+        #expect(txns(container).count == 1)
+    }
+
+    @Test func aNonChargeOlderThanAWeekIsPurged() throws {
+        let (ledger, container, url) = try makeStore()
+        let eightDaysAgo = Date().addingTimeInterval(-8 * 24 * 60 * 60)
+
+        try appendAlert(merchantReceipt, at: eightDaysAgo, to: url)            // evicted
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), at: Date(), to: url)
 
         let result = ledger.drain()
 
@@ -278,26 +293,25 @@ struct LedgerStoreTests {
         let kept = JournalStore.readAll(from: url)
         #expect(kept.count == 2)
         #expect(kept.allSatisfy { $0.rawText.contains("BREEZE") })
+        #expect(txns(container).count == 1)
     }
 
-    @Test func compactionLeavesOnlyCharges() throws {
-        let (ledger, _, url) = try makeStore()
-        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
-        try appendAlert(amexAlert("PUBLIX", "14.20"), to: url)
-        try appendAlert(merchantReceipt, to: url)
+    /// The window must never touch a charge, however old.
+    @Test func chargesAreKeptHoweverOld() throws {
+        let (ledger, container, url) = try makeStore()
+        let longAgo = Date().addingTimeInterval(-365 * 24 * 60 * 60)
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), at: longAgo, to: url)
 
-        ledger.drain()
+        let result = ledger.drain()
 
-        let kept = JournalStore.readAll(from: url)
-        #expect(kept.count == 4)   // two charges, an enter/result pair each
-        for record in kept {
-            #expect(AlertParsers.parseFirst(record.rawText)?.isCharge == true)
-        }
+        #expect(result.journalLinesDropped == 0)
+        #expect(JournalStore.readAll(from: url).count == 2)
+        #expect(txns(container).count == 1)
     }
 
-    /// Compaction is destructive, so a journal that is already all-charges is left byte-for-byte
-    /// alone rather than rewritten on every foreground.
-    @Test func anAllChargeJournalIsNotRewritten() throws {
+    /// A journal with nothing to purge is left byte-for-byte alone rather than rewritten on
+    /// every foreground.
+    @Test func aJournalWithNothingToPurgeIsNotRewritten() throws {
         let (ledger, _, url) = try makeStore()
         try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
         let before = try Data(contentsOf: url)
@@ -454,11 +468,12 @@ struct LedgerStoreTests {
         ledger.drain()
         let diag = ledger.diagnostics()
 
-        // One charge recorded; the unreadable body is nowhere, including in the journal count.
+        // One charge recorded. The unreadable body is no ledger row, but it IS still in the
+        // journal — four lines: two for the charge, two for the body being held for a week.
         #expect(diag.eventCount == 1)
         #expect(diag.transactionCount == 1)
         #expect(diag.parserVersion == AlertParsers.version)
-        #expect(diag.journalLines == 2)
+        #expect(diag.journalLines == 4)
         #expect(diag.journalBytes > 0)
     }
 }

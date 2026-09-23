@@ -99,22 +99,26 @@ otherwise silent: the Shortcut keeps firing, or the alert is simply absent.
 Shows last captured, last manual entry, counts of alerts and charges, the parser version in
 force, and the journal's size. The journal can be shared out from here.
 
-## Only charges are kept
+## Only charges reach the ledger
 
 A body that resolves to no charge — a merchant's own confirmation email for a purchase Amex
-already reported, a statement notice, an OTP — is recorded **nowhere**. It gets no row, no
-entry in any list, and the drain then removes it from the journal too.
+already reported, a statement notice, an OTP — never becomes a ledger row, and nothing in the
+app shows it to you.
 
-**This has a cost worth stating plainly.** A genuine Fidelity or Amex charge that stops
-parsing will now disappear silently rather than appearing as unreadable. The alternative was
-keeping unreadable bodies for review, which is what an earlier version did; the choice was
-made deliberately, and the way to notice a parser regression is a charge you know you made
-that is missing from the feed.
+But it is **not discarded on arrival either**. Non-charges are held in the raw journal for a
+week and then purged; charges are kept forever.
 
-The journal is the one thing in this app that must never lose data, so compaction is written
+The week is what keeps the recovery path alive. A retained body is re-parsed on every drain,
+so a charge that starts being recognised within the window is picked up with no special
+handling and nothing to migrate. Past the week it is gone — the accepted cost of not carrying
+junk indefinitely. A genuine charge that stops parsing is therefore recoverable for a week,
+and silent after that.
+
+The journal is the one thing in this app that must never lose data, so the purge is written
 accordingly: it builds the replacement alongside the original and swaps it in with a single
-rename, and it refuses to run at all if the store rejected the write — at that point the
-journal is the only copy of anything.
+rename, so an interruption leaves the original intact rather than a half-written file. It also
+refuses to run at all if the store rejected the write — at that point the journal is the only
+copy of anything.
 
 ## Still missing
 

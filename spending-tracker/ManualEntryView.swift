@@ -82,8 +82,8 @@ struct ManualEntryView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Not read as a charge")
                             .font(.subheadline.weight(.medium))
-                        Text("Nothing was added to the ledger, and this text will be "
-                             + "discarded on the next refresh. Only charges are kept.")
+                        Text("Nothing was added to the ledger. It stays in the raw journal "
+                             + "for a week, in case the parser learns to read it.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

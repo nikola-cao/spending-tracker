@@ -28,12 +28,12 @@ import SwiftData
 /// Adding a second source (Amex email) required no change to this shape at all: a source is a
 /// parser, and the journal does not care where a body came from.
 ///
-/// **Only charges are kept.** Everything else the automations capture — a merchant's own
-/// confirmation email for a purchase already recorded, a statement notice, an OTP — is
-/// counted, dropped, and then removed from the journal. That was a deliberate choice against
-/// the alternative of keeping unparseable bodies for review, and the cost is real: a genuine
-/// charge that stops parsing now disappears with no trace rather than showing up as
-/// unreadable. See the README.
+/// **Only charges reach the ledger; everything else is held in the journal for a week.**
+/// The automations also capture a merchant's own confirmation email for a purchase already
+/// recorded, statement notices, and OTPs. None of that is ever a ledger row — but it is not
+/// discarded on arrival either. Holding it costs nothing in the store and preserves the
+/// recovery path: a retained body is re-parsed on every drain, so a charge that starts being
+/// recognised within the week is picked up with no special handling. See `nonChargeRetention`.
 @MainActor
 final class LedgerStore {
 
@@ -43,7 +43,7 @@ final class LedgerStore {
         var transactionsAdded = 0
         /// Bodies that resolved to no charge, and so were recorded nowhere.
         var notCharges = 0
-        /// Journal lines removed by compaction.
+        /// Journal lines dropped for not being charges and outliving the retention window.
         var journalLinesDropped = 0
         /// Non-nil when the store refused the write. Surfaced in the UI rather than
         /// swallowed: a silent save failure renders a complete-looking ledger that is not on
@@ -91,9 +91,9 @@ final class LedgerStore {
             return result
         }
 
-        // Compaction runs only AFTER the store has accepted the write. If the save failed the
+        // The purge runs only AFTER the store has accepted the write. If the save failed the
         // journal is the only copy of anything, so nothing may be dropped from it.
-        result.journalLinesDropped = compact(records)
+        result.journalLinesDropped = purgeExpired(records, now: Date())
         return result
     }
 
@@ -159,28 +159,43 @@ final class LedgerStore {
         }
     }
 
-    /// Drops journal lines that are not charges.
+    /// How long a body that resolved to no charge is kept before being dropped.
+    ///
+    /// Charges are kept forever. Everything else — a merchant's own confirmation email for a
+    /// purchase already recorded, a statement notice, an OTP — is held for a week and then
+    /// purged.
+    ///
+    /// The window is what preserves the recovery path. A retained body is re-parsed on every
+    /// drain, so a charge that starts being recognised within the week is picked up normally,
+    /// with no special handling. Past that it is gone, which is the accepted cost of not
+    /// carrying junk indefinitely.
+    static let nonChargeRetention: TimeInterval = 7 * 24 * 60 * 60
+
+    /// Drops journal lines that resolved to no charge and have outlived the retention window.
     ///
     /// Runs over the records the drain already read, so it costs nothing extra to decide.
     /// `JournalStore.replace` swaps the file in atomically, so an interruption leaves the
-    /// original intact.
-    ///
-    /// This is the one place in the app that deliberately discards captured text. It is
-    /// confined to the journal, and only ever removes bodies that resolved to no charge.
-    private func compact(_ records: [JournalRecord]) -> Int {
+    /// original intact. This is the only place in the app that deliberately discards captured
+    /// text.
+    private func purgeExpired(_ records: [JournalRecord], now: Date) -> Int {
         guard !records.isEmpty else { return 0 }
+        let cutoff = now.addingTimeInterval(-Self.nonChargeRetention)
 
         let kept = records.filter { record in
             let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !body.isEmpty else { return false }
-            return AlertParsers.parseAll(body).contains(where: \.isCharge)
+            // A charge is kept forever, whenever it arrived.
+            if !body.isEmpty, AlertParsers.parseAll(body).contains(where: \.isCharge) {
+                return true
+            }
+            // Anything else — including an empty body — survives only inside the window.
+            return record.receivedAt > cutoff
         }
 
         guard kept.count < records.count else { return 0 }
         do {
             try JournalStore.replace(contentsOf: journalURL, with: kept)
         } catch {
-            // Losing the compaction is harmless — the lines are simply dropped next time.
+            // Losing a purge is harmless — the same lines are dropped on a later drain.
             return 0
         }
         return records.count - kept.count
