@@ -443,6 +443,85 @@ struct LedgerStoreTests {
         #expect(txns(container).filter(\.occurredAtIsFromMessage).count == 1)
     }
 
+    // MARK: - Deleting
+    //
+    // Deleting a charge has to remove its journal line too. The store is derived, so a row
+    // deleted from the store ALONE is recreated by the very next drain — which is why that is
+    // the property worth testing, not just the deletion itself.
+
+    @Test func deletingAChargeRemovesItEverywhere() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
+        ledger.drain()
+        #expect(txns(container).count == 1)
+
+        let removed = ledger.delete(txns(container))
+
+        #expect(removed == 1)
+        #expect(txns(container).isEmpty)
+        #expect(events(container).isEmpty)
+        #expect(JournalStore.readAll(from: url).isEmpty)
+    }
+
+    /// The one that matters. Without the journal edit this drain recreates the row, and the
+    /// deletion looks like it silently undid itself.
+    @Test func aDeletedChargeDoesNotComeBackOnTheNextDrain() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
+        ledger.drain()
+
+        ledger.delete(txns(container))
+        ledger.drain()
+
+        #expect(txns(container).isEmpty)
+        #expect(events(container).isEmpty)
+    }
+
+    @Test func deletingOneChargeLeavesTheOthersAlone() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "KEEP ME"), to: url)
+        try appendAlert(charge("9.99", "DELETE ME"), to: url)
+        ledger.drain()
+        #expect(txns(container).count == 2)
+
+        let doomed = try #require(txns(container).first { $0.merchant == "DELETE ME" })
+        ledger.delete([doomed])
+
+        let left = txns(container)
+        #expect(left.count == 1)
+        #expect(left.first?.merchant == "KEEP ME")
+
+        // Only the dead one left the journal.
+        let journal = JournalStore.readAll(from: url)
+        #expect(journal.contains { $0.rawText.contains("KEEP ME") })
+        #expect(!journal.contains { $0.rawText.contains("DELETE ME") })
+    }
+
+    /// A deleted charge must not be resurrected by a later drain either — including one
+    /// triggered by an unrelated new alert.
+    @Test func aDeletedChargeStaysDeletedWhenAnotherArrives() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "DELETE ME"), to: url)
+        ledger.drain()
+        ledger.delete(txns(container))
+
+        try appendAlert(charge("9.99", "LATER"), to: url)
+        ledger.drain()
+
+        let left = txns(container)
+        #expect(left.count == 1)
+        #expect(left.first?.merchant == "LATER")
+    }
+
+    @Test func deletingNothingIsHarmless() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
+        ledger.drain()
+
+        #expect(ledger.delete([]) == 0)
+        #expect(txns(container).count == 1)
+    }
+
     // MARK: - Hashing
 
     @Test func contentHashIsStableAndDistinguishing() {

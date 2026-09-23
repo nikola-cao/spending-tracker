@@ -83,6 +83,17 @@ regardless of which came in first. `Txn.receivedAt` is therefore its own field a
 `Txn.occurredAt` is display-only. The near-duplicate window measures on arrival too — on
 `occurredAt` it would call any two same-day Amex charges at one merchant duplicates.
 
+**The month total is keyed on `occurredAt`, not `receivedAt`** — the best-known time of the
+purchase, which is the date printed in the Amex email and the alert's arrival for Fidelity.
+A charge that arrives late still belongs to the month it was made in.
+
+**Deleting a charge removes its journal line too.** This is not a nicety: the store is
+derived, so deleting only the row would have the next drain recreate it from the journal
+within seconds. The journal is written *first*, and that order is deliberate — if the journal
+edit lands and the store delete fails, the row is still on screen and can simply be deleted
+again. The reverse order fails the other way: the row vanishes, then silently reappears, which
+looks like a bug in the app rather than a failed write. There is a test for exactly that.
+
 ## Adding a charge by hand
 
 The **+** button records a message you paste or type. It writes to the journal rather than
@@ -296,7 +307,10 @@ ST1 ok|spending-tracker|main:0|chars:231|rx:1|fid:1|grp:0
 | `fid:1` | It **mentioned Fidelity** — the pipe is carrying card traffic. `0` means the pipe works but Shortcuts handed it something unrelated. Deliberately recall-only: `1` does not mean "this is a transaction". Telling those apart is the parser's job (Stage 2). |
 | `grp:0` | No App Group container. Expected on a free Apple ID; only matters if the process name is wrong. |
 
-The app's first screen repeats these per record and carries a **staleness banner**.
+**Last captured** now lives only on the Diagnostics screen. It used to be a banner on the
+first screen; it was removed because it was permanently on display for a value that changes
+rarely. The signal is not gone — it is under **⋯ → Diagnostics**, alongside last manual entry
+and the counts.
 
 ---
 
@@ -304,8 +318,8 @@ The app's first screen repeats these per record and carries a **staleness banner
 
 - **Signing expires every 7 days** on a free Apple ID. After that the app will not launch
   and capture stops *silently* — the Shortcut still fires, the intent just never runs.
-  Re-sign from Xcode (⌘R) weekly. The staleness banner turns red after 48 hours of no
-  captures, which is the only warning you get.
+  Re-sign from Xcode (⌘R) weekly. **Nothing on the main screen will tell you this happened**;
+  check **⋯ → Diagnostics** for "Last captured", which is now the only place it is visible.
 - **"Every transaction the moment it occurs" is not literally achievable.** SMS delivery
   is best-effort, and each purchase generates 2–3 alerts (authorized, posted, plus
   card-not-present/international variants). A statement import will eventually be the
@@ -334,7 +348,7 @@ xcodebuild -project spending-tracker.xcodeproj -scheme spending-tracker \
 spending-tracker/
   Journal/          append-only JSONL journal + runtime diagnostics
   Intents/          LogTransactionIntent — the only App Intent
-  ContentView.swift the journal list and staleness banner
+  ContentView.swift the charge feed, month total, and swipe-to-delete
 ```
 
 New `.swift` files are picked up automatically — the project uses

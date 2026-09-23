@@ -232,6 +232,61 @@ final class LedgerStore {
         return runID
     }
 
+    // MARK: - Deleting
+
+    /// Removes charges, and the journal lines they came from.
+    ///
+    /// **The journal edit is not optional.** The store is derived: the drain re-reads the
+    /// journal on every foreground and recreates any invocation it does not already know
+    /// about, so deleting only the row would have it reappear moments later.
+    ///
+    /// The journal is written FIRST, and that order matters. If the journal edit lands and the
+    /// store delete fails, the row is still on screen and the user can simply delete it again.
+    /// The reverse order fails the other way: the row disappears, then silently comes back on
+    /// the next drain, which is both confusing and looks like a bug in the app rather than a
+    /// failed write.
+    @discardableResult
+    func delete(_ txns: [Txn]) -> Int {
+        guard !txns.isEmpty else { return 0 }
+        let context = container.mainContext
+
+        // The event carries the invocation identity; deleting it cascades to its transaction.
+        var events: [AlertEvent] = []
+        var runIDs = Set<UUID>()
+        var orphans: [Txn] = []
+
+        for txn in txns {
+            if let event = txn.event {
+                events.append(event)
+                runIDs.insert(event.runID)
+            } else {
+                // Should not happen — every charge is derived from an event — but a row that
+                // somehow has none must still be deletable.
+                orphans.append(txn)
+            }
+        }
+
+        removeJournalRecords(runIDs: runIDs)
+
+        for event in events { context.delete(event) }
+        for txn in orphans { context.delete(txn) }
+        try? context.save()
+
+        return events.count + orphans.count
+    }
+
+    /// Drops every journal line written by the given invocations.
+    ///
+    /// Atomic and staged like the retention purge, and for the same reason: the journal is the
+    /// only thing here that must never be left half-written.
+    private func removeJournalRecords(runIDs: Set<UUID>) {
+        guard !runIDs.isEmpty else { return }
+        let records = JournalStore.readAll(from: journalURL)
+        let kept = records.filter { !runIDs.contains($0.runID) }
+        guard kept.count < records.count else { return }
+        try? JournalStore.replace(contentsOf: journalURL, with: kept)
+    }
+
     // MARK: - Diagnostics
 
     struct Diagnostics: Equatable {

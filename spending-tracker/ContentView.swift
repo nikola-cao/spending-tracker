@@ -26,7 +26,6 @@ struct ContentView: View {
     @Query(sort: [SortDescriptor(\Txn.receivedAt, order: .reverse)])
     private var transactions: [Txn]
 
-    @State private var lastCapture: Date?
     @State private var isShowingJournal = false
     @State private var isShowingManualEntry = false
     @State private var isShowingDiagnostics = false
@@ -35,7 +34,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             List {
-                freshnessSection
+                totalSpendSection
                 saveErrorSection
                 transactionsSection
             }
@@ -87,14 +86,7 @@ struct ContentView: View {
     }
 
     private func refresh() {
-        let result = ledger.drain()
-        saveError = result.saveError
-        // Read from the journal rather than the store: this answers "is capture still
-        // working", which must not depend on the drain having succeeded. Manual entries are
-        // excluded — a row added by hand must never paper over the automation having stopped.
-        lastCapture = JournalStore.readAll(from: JournalLocation.fileURL)
-            .last { $0.note != JournalRecord.manualMarker }?
-            .receivedAt
+        saveError = ledger.drain().saveError
     }
 
     /// A refused write is the one failure that would otherwise render a complete-looking
@@ -123,36 +115,45 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Freshness
-    //
-    // Signing expires every 7 days on a free Apple ID, and when it does the Shortcut still
-    // fires while the App Intent quietly never runs. Capture stops with no error anywhere.
-    // This banner is the only thing that makes that visible.
+    // MARK: - Total
 
-    private var staleness: (text: String, isStale: Bool) {
-        guard let lastCapture else { return ("No alerts captured yet", true) }
-        let hours = Date().timeIntervalSince(lastCapture) / 3600
-        return ("Last capture: \(lastCapture.formatted(.relative(presentation: .named)))", hours > 48)
+    /// What has been spent this calendar month.
+    ///
+    /// Keyed on `occurredAt`, the best-known time of the purchase — the date printed in the
+    /// Amex email, and the alert's arrival for Fidelity, whose SMS carries no date at all.
+    /// Deliberately NOT `receivedAt`, which is when we heard about it; a charge that arrives
+    /// late still belongs to the month it was made in.
+    private var monthSpend: (total: String, count: Int, name: String) {
+        let calendar = Calendar.current
+        let now = Date()
+        let thisMonth = transactions.filter {
+            calendar.isDate($0.occurredAt, equalTo: now, toGranularity: .month)
+        }
+        let minor = thisMonth.reduce(0) { $0 + $1.amountMinor }
+        return (
+            total: (Decimal(minor) / 100).formatted(.currency(code: "USD")),
+            count: thisMonth.count,
+            name: now.formatted(.dateTime.month(.wide).year())
+        )
     }
 
-    private var freshnessSection: some View {
-        Section {
-            HStack(spacing: 8) {
-                Image(systemName: staleness.isStale
-                      ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(staleness.isStale ? Color.red : Color.green)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(staleness.text).font(.subheadline.weight(.medium))
-                    if staleness.isStale {
-                        Text("Nothing captured in over 48 hours. Re-sign the app from Xcode "
-                             + "(⌘R), then check the automation is still enabled.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+    private var totalSpendSection: some View {
+        let spend = monthSpend
+        return Section {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(spend.total)
+                    .font(.largeTitle.weight(.semibold))
+                    .monospacedDigit()
+                // Hoisted: an interpolated ternary inside a ViewBuilder is what blows the
+                // type checker's time budget.
+                Text(spend.count == 1 ? "1 charge" : "\(spend.count) charges")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+            .padding(.vertical, 4)
+        } header: {
+            Text(spend.name)
         }
-        .listRowBackground(staleness.isStale ? Color.red.opacity(0.10) : nil)
     }
 
     // MARK: - Ledger
@@ -172,10 +173,20 @@ struct ContentView: View {
                 ForEach(transactions) { txn in
                     TxnRow(txn: txn)
                 }
+                .onDelete(perform: deleteTransactions)
             } header: {
                 Text(chargesHeader)
+            } footer: {
+                Text("Swipe a charge to delete it. Deleting also removes it from the raw "
+                     + "journal, so it will not come back.")
             }
         }
+    }
+
+    /// Deleting a charge has to remove its journal line too — the store is derived, and the
+    /// next drain would otherwise recreate the row from the journal within seconds.
+    private func deleteTransactions(at offsets: IndexSet) {
+        ledger.delete(offsets.map { transactions[$0] })
     }
 
     /// Hoisted out of the `ViewBuilder`: an interpolated ternary inside one is what blows the
