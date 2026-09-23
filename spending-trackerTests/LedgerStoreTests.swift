@@ -23,11 +23,10 @@ struct LedgerStoreTests {
             .appending(path: "journal.jsonl", directoryHint: .notDirectory)
     }
 
-    /// Writes one alert the way `LogTransactionIntent` does: an `enter`/`result` pair sharing
-    /// a single `runID`. The runID is the occurrence identity the ledger dedupes on, so tests
-    /// control it explicitly.
+    /// Writes one alert exactly as `LogTransactionIntent` does: **a single line**, with the
+    /// runID the ledger dedupes on supplied by the caller so tests control it.
     ///
-    /// `at` places the alert at a chosen arrival time, which is what the feed sorts on — the
+    /// `at` places the alert at a chosen arrival time, which is what the feed sorts on. The
     /// record is built directly rather than via the `.diagnostic` convenience, which always
     /// stamps `Date()`.
     private func appendAlert(
@@ -36,27 +35,48 @@ struct LedgerStoreTests {
         at receivedAt: Date = Date(),
         to url: URL
     ) throws {
-        for phase in ["enter", "result"] {
-            let record = JournalRecord(
-                id: UUID(),
-                runID: runID,
-                phase: phase,
-                receivedAt: receivedAt,
-                processName: "spending-tracker",
-                bundleIdentifier: "com.nikola.spending-tracker",
-                isMainThread: false,
-                charCount: body.count,
-                utf8ByteCount: body.utf8.count,
-                hasFidelityPrefix: body.hasPrefix("Fidelity"),
-                containsRegisteredTrademark: body.contains("\u{00AE}"),
-                mentionsFidelity: FidelityAlertHeuristic.mentionsFidelity(body),
-                appGroupAvailable: false,
-                journalDirectory: url.deletingLastPathComponent().path,
-                rawText: body,
-                note: phase == "result" ? "ok" : ""
-            )
-            try JournalStore.append(record, to: url)
-        }
+        try appendRecord(body, runID: runID, phase: JournalRecord.capturePhase, at: receivedAt, to: url)
+    }
+
+    /// Writes an alert the way versions before single-line capture did: an `enter`/`result`
+    /// pair sharing one runID. Kept because journals in the field still contain pairs, and the
+    /// drain has to keep collapsing them.
+    private func appendLegacyPair(
+        _ body: String,
+        runID: UUID = UUID(),
+        at receivedAt: Date = Date(),
+        to url: URL
+    ) throws {
+        try appendRecord(body, runID: runID, phase: "enter", at: receivedAt, to: url)
+        try appendRecord(body, runID: runID, phase: "result", at: receivedAt, to: url)
+    }
+
+    private func appendRecord(
+        _ body: String,
+        runID: UUID,
+        phase: String,
+        at receivedAt: Date,
+        to url: URL
+    ) throws {
+        let record = JournalRecord(
+            id: UUID(),
+            runID: runID,
+            phase: phase,
+            receivedAt: receivedAt,
+            processName: "spending-tracker",
+            bundleIdentifier: "com.nikola.spending-tracker",
+            isMainThread: false,
+            charCount: body.count,
+            utf8ByteCount: body.utf8.count,
+            hasFidelityPrefix: body.hasPrefix("Fidelity"),
+            containsRegisteredTrademark: body.contains("\u{00AE}"),
+            mentionsFidelity: FidelityAlertHeuristic.mentionsFidelity(body),
+            appGroupAvailable: false,
+            journalDirectory: url.deletingLastPathComponent().path,
+            rawText: body,
+            note: ""
+        )
+        try JournalStore.append(record, to: url)
     }
 
     /// An Amex alert as `HTMLText` would render it. The date is the same in both ordering
@@ -125,16 +145,29 @@ struct LedgerStoreTests {
         #expect(txns(container).count == 3, "a repeat charge must never be treated as a redelivery")
     }
 
-    /// The other half of the same coin: a redelivery of ONE alert — the enter/result pair —
-    /// must still collapse to a single row.
-    @Test func theEnterResultPairCollapsesToOneRow() throws {
+    /// A current journal is one line per alert, so the ledger sees exactly one record.
+    @Test func oneAlertIsOneJournalLine() throws {
         let (ledger, container, url) = try makeStore()
         try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
 
         let result = ledger.drain()
 
-        #expect(result.recordsRead == 2, "the pair is two journal lines")
+        #expect(result.recordsRead == 1)
+        #expect(result.eventsAdded == 1)
+        #expect(txns(container).count == 1)
+    }
+
+    /// Journals written before single-line capture hold an `enter`/`result` pair per alert, and
+    /// those still have to collapse to one row rather than two.
+    @Test func aLegacyEnterResultPairCollapsesToOneRow() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendLegacyPair(charge("2.50", "BREEZE*00HS5MV"), to: url)
+
+        let result = ledger.drain()
+
+        #expect(result.recordsRead == 2, "the legacy pair is two journal lines")
         #expect(result.eventsAdded == 1, "but one alert")
+        #expect(result.transactionsAdded == 1)
         #expect(txns(container).count == 1)
     }
 
@@ -274,7 +307,7 @@ struct LedgerStoreTests {
 
         // Nothing is discarded on arrival — the body stays recoverable for a week.
         #expect(result.journalLinesDropped == 0)
-        #expect(JournalStore.readAll(from: url).count == 4)
+        #expect(JournalStore.readAll(from: url).count == 2)
         // ...and it still never becomes a ledger row.
         #expect(result.notCharges == 1)
         #expect(txns(container).count == 1)
@@ -289,9 +322,9 @@ struct LedgerStoreTests {
 
         let result = ledger.drain()
 
-        #expect(result.journalLinesDropped == 2)
+        #expect(result.journalLinesDropped == 1)
         let kept = JournalStore.readAll(from: url)
-        #expect(kept.count == 2)
+        #expect(kept.count == 1)
         #expect(kept.allSatisfy { $0.rawText.contains("BREEZE") })
         #expect(txns(container).count == 1)
     }
@@ -305,7 +338,7 @@ struct LedgerStoreTests {
         let result = ledger.drain()
 
         #expect(result.journalLinesDropped == 0)
-        #expect(JournalStore.readAll(from: url).count == 2)
+        #expect(JournalStore.readAll(from: url).count == 1)
         #expect(txns(container).count == 1)
     }
 
@@ -469,11 +502,11 @@ struct LedgerStoreTests {
         let diag = ledger.diagnostics()
 
         // One charge recorded. The unreadable body is no ledger row, but it IS still in the
-        // journal — four lines: two for the charge, two for the body being held for a week.
+        // journal — two lines: one for the charge, one for the body held for a week.
         #expect(diag.eventCount == 1)
         #expect(diag.transactionCount == 1)
         #expect(diag.parserVersion == AlertParsers.version)
-        #expect(diag.journalLines == 4)
+        #expect(diag.journalLines == 2)
         #expect(diag.journalBytes > 0)
     }
 }

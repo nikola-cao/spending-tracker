@@ -58,25 +58,28 @@ struct LogTransactionIntent: AppIntent {
         let url = JournalLocation.fileURL
         let trimmedIsEmpty = raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-        // An empty invocation is itself a Shortcuts plumbing bug, and is exactly the
-        // evidence worth having. It IS journalled (with a note) rather than silently
-        // dropped — otherwise "ran with empty input" is indistinguishable from "never ran",
-        // which is the single most important distinction Stage 1 exists to make.
+        // ONE line per alert.
+        //
+        // This used to be an `enter`/`result` pair: `enter` written by the shortest possible
+        // code path, `result` only after the whole path had run a second time, so that a lone
+        // `enter` localised a failure BETWEEN the two writes. That question was worth asking
+        // while Stage 1 was proving the pipe; it has not been since, and the pair cost a full
+        // second copy of every body — which, with ~60 KB Amex emails, is now the single
+        // largest thing in the journal.
+        //
+        // A write that fails still throws, and a throw surfaces in the Shortcuts run, so a
+        // failure remains visible without the pair.
+        //
+        // An empty invocation is itself a Shortcuts plumbing bug, and is exactly the evidence
+        // worth having. It is journalled (with a note) rather than dropped — otherwise "ran
+        // with empty input" is indistinguishable from "never ran", which is the distinction
+        // the whole diagnostic exists to make.
         do {
             try JournalStore.append(
-                .diagnostic(runID: runID, phase: "enter", raw: raw,
+                .diagnostic(runID: runID, phase: JournalRecord.capturePhase, raw: raw,
                             note: trimmedIsEmpty ? "rejected: empty input" : ""),
                 to: url
             )
-            if !trimmedIsEmpty {
-                // "enter" is written by the shortest possible path; "result" only after the
-                // whole path (resolve → create → encode → append → flush) has run twice.
-                // A lone "enter" therefore localises a failure that a single record cannot.
-                try JournalStore.append(
-                    .diagnostic(runID: runID, phase: "result", raw: raw, note: "ok"),
-                    to: url
-                )
-            }
         } catch {
             // Not swallowed: a throw surfaces in the Shortcuts run, which is readable on
             // the device without Xcode.

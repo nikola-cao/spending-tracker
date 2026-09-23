@@ -28,18 +28,17 @@ struct LogTransactionIntentTests {
         _ = try await intent.perform()
 
         let after = JournalStore.readAll(from: JournalLocation.fileURL)
-        // enter + result
-        #expect(after.count == before + 2)
+        // ONE line per alert. This was an enter/result pair until the pair's diagnostic job
+        // was done and the second copy stopped being worth its size.
+        #expect(after.count == before + 1)
 
-        let new = Array(after.suffix(2))
-        #expect(new.first?.phase == "enter")
-        #expect(new.last?.phase == "result")
-        #expect(new.first?.runID == new.last?.runID)      // the pair is linked
-        #expect(new.last?.rawText == realBody)
-        #expect(new.last?.containsRegisteredTrademark == true)
-        #expect(new.last?.hasFidelityPrefix == true)
-        #expect(new.last?.mentionsFidelity == true)
-        #expect(new.last?.charCount == realBody.count)
+        let new = try #require(after.last)
+        #expect(new.phase == JournalRecord.capturePhase)
+        #expect(new.rawText == realBody)
+        #expect(new.containsRegisteredTrademark == true)
+        #expect(new.hasFidelityPrefix == true)
+        #expect(new.mentionsFidelity == true)
+        #expect(new.charCount == realBody.count)
     }
 
     /// An empty invocation is a Shortcuts plumbing bug, and is exactly the evidence worth
@@ -56,9 +55,9 @@ struct LogTransactionIntentTests {
         _ = try await intent.perform()
 
         let after = JournalStore.readAll(from: JournalLocation.fileURL)
-        // One "enter" record carrying the rejection note — no "result", and no zero row.
+        // One record carrying the rejection note — and no zero row.
         #expect(after.count == before + 1)
-        #expect(after.last?.phase == "enter")
+        #expect(after.last?.phase == JournalRecord.capturePhase)
         #expect(after.last?.note == "rejected: empty input")
     }
 }

@@ -55,8 +55,15 @@ silently pollute a total, and a wrong total is invisible.
 Fidelity body is a pure function of (card, amount, merchant) — no transaction id, no
 timestamp — so a monthly `$15.49 at NETFLIX.COM` is *byte-identical* every month. Keyed on
 the body, the second month onward is silently discarded with no row and no trace. The key is
-`runID#matchIndex` from the journal, which collapses the `enter`/`result` pair (they share a
-`runID`) while recording genuine repeats.
+`runID#matchIndex` from the journal, so a genuine repeat is recorded while a redelivery of the
+same invocation is not.
+
+**One journal line per alert.** Earlier versions wrote an `enter`/`result` pair — `enter` from
+the shortest possible code path, `result` only after the whole write had run twice — so that a
+lone `enter` localised a failure *between* the two. That question was worth asking while
+Stage 1 was proving the pipe; it has not been since, and the pair cost a full second copy of
+every body, which with ~60 KB Amex emails was the largest thing in the journal. Journals
+written before the change still hold pairs, and the drain still collapses them by `runID`.
 
 A near-identical charge — same card, amount and merchant within 5 minutes — is **flagged,
 never merged**. Two identical charges are two real charges; flagging is recoverable, silent

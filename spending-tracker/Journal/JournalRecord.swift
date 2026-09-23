@@ -21,8 +21,13 @@ nonisolated struct JournalRecord: Codable, Sendable, Equatable, Identifiable {
     /// Links the `enter` and `result` lines of one invocation.
     let runID: UUID
 
-    /// "enter" | "result". A plain String rather than an enum so the JSON stays readable
-    /// by eye, without a reference table, when that is the only way to see it.
+    /// What kind of journal line this is.
+    ///
+    /// Historic journals hold an `enter`/`result` pair per alert, written by an earlier
+    /// version of the App Intent to localise a failure between two writes. Nothing writes
+    /// those any more — one line per alert, always `capture` — but the field stays because
+    /// journals are append-only and old lines still have to decode. A plain String rather
+    /// than an enum so the JSON stays readable by eye, without a reference table.
     let phase: String
 
     let receivedAt: Date
@@ -54,7 +59,15 @@ extension JournalRecord {
     ///
     /// The freshness check excludes these. A manual entry must never make capture look alive
     /// when the automation has actually stopped.
-    static let manualMarker = "manual"
+    /// `nonisolated` on both, explicitly. The type's `nonisolated` does NOT propagate into an
+    /// extension, so without this they are main-actor isolated and unreadable from
+    /// `LogTransactionIntent.perform()`, whose body runs off the main actor — a warning today
+    /// and an error in the Swift 6 language mode.
+    nonisolated static let manualMarker = "manual"
+
+    /// The phase every new line is written with. Earlier versions wrote an `enter`/`result`
+    /// pair per alert; see the note on `phase`.
+    nonisolated static let capturePhase = "capture"
 
     /// Explicitly `nonisolated` — the type's isolation does not propagate into an extension.
     nonisolated static func diagnostic(

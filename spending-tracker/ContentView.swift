@@ -249,9 +249,9 @@ struct JournalView: View {
                 ForEach(Array(records.reversed())) { record in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
-                            Text(record.phase == "enter" ? "▸ enter" : "✓ result")
-                                .font(.caption.bold())
-                                .foregroundStyle(record.phase == "enter" ? Color.orange : Color.green)
+                            // No phase chip: one line per alert now, so it would say the same
+                            // thing on every row. Older journals still hold an enter/result
+                            // pair and simply read as two lines with the same body.
                             Text(record.receivedAt, format: .dateTime.hour().minute().second())
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
