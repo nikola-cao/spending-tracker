@@ -226,10 +226,53 @@ final class LedgerStore {
 
         let runID = UUID()
         try JournalStore.append(
-            .diagnostic(runID: runID, phase: "result", raw: body, note: JournalRecord.manualMarker),
+            .diagnostic(runID: runID, phase: JournalRecord.capturePhase, raw: body,
+                        note: JournalRecord.manualMarker),
             to: journalURL
         )
         return runID
+    }
+
+    /// Records a charge a person typed into the form.
+    ///
+    /// Composed into the canonical line and journalled, so it takes the same path as a
+    /// captured charge — same drain, same retention, same deletion behaviour — and can be
+    /// re-read on any later launch. See `ManualEntryParser` for the format and the reason it
+    /// is a text line rather than a row written straight into the store.
+    @discardableResult
+    func appendManualCharge(
+        merchant: String,
+        amount: String,
+        date: Date,
+        cardSuffix: String
+    ) throws -> UUID {
+        try appendManualEntry(
+            ManualEntryParser.compose(
+                merchant: merchant,
+                amount: amount,
+                date: date,
+                cardSuffix: cardSuffix
+            )
+        )
+    }
+
+    /// The card suffixes seen so far, for the manual-entry picker.
+    ///
+    /// Newest first, so the card used most recently is the first option. Reads from `Txn`
+    /// rather than from the form's own history, which means it reflects what was actually
+    /// captured — including cards only ever seen through the automations.
+    func knownCardSuffixes() -> [String] {
+        let descriptor = FetchDescriptor<Txn>(
+            sortBy: [SortDescriptor(\Txn.receivedAt, order: .reverse)]
+        )
+        let txns = (try? container.mainContext.fetch(descriptor)) ?? []
+
+        var seen = Set<String>()
+        var result: [String] = []
+        for txn in txns where !txn.cardSuffix.isEmpty {
+            if seen.insert(txn.cardSuffix).inserted { result.append(txn.cardSuffix) }
+        }
+        return result
     }
 
     // MARK: - Deleting

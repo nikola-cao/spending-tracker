@@ -29,6 +29,18 @@ nonisolated enum Money {
     /// there is no correct guess available.
     private static let shape = #"^(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]{1,2})?$"#
 
+    /// `120499` → `"1204.99"`.
+    ///
+    /// Built by hand rather than with a formatter, because `FormatStyle` is locale-aware and
+    /// would happily produce `"1204,99"` on a device set to a comma-decimal locale — which
+    /// `minorUnits(from:)` above then correctly rejects, breaking the round trip. This is used
+    /// to write the canonical amount into a journal line, so it has to be locale-independent.
+    static func decimalString(fromMinor minor: Int) -> String {
+        let whole = minor / 100
+        let cents = minor % 100
+        return "\(whole).\(String(format: "%02d", cents))"
+    }
+
     static func minorUnits(from rawAmount: String) -> Int? {
         guard rawAmount.range(of: shape, options: .regularExpression) != nil else { return nil }
 

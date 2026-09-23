@@ -96,17 +96,31 @@ looks like a bug in the app rather than a failed write. There is a test for exac
 
 ## Adding a charge by hand
 
-The **+** button records a message you paste or type. It writes to the journal rather than
-straight into the store, deliberately: the text then takes the exact path the automation
-uses, so it is durable, replayable, and cannot drift from the real ingest.
+The **+** button opens a form: merchant, amount, purchase date, and the card's last digits.
+The card field is both a text input and a menu of every suffix captured so far — typing covers
+a card never seen before, the menu covers the common case in one tap. The digits must be four
+or five, ASCII only.
 
-Two jobs. It's the fallback when the automation is down, and it's the only way to exercise
-the whole pipeline — journal → drain → parser → ledger — short of a real purchase. Since no
-live alert has yet flowed end to end, that second job is most of its value today.
+The form does **not** write a row straight into the store. It composes the fields into a
+canonical line and journals it, exactly as a captured alert is journalled:
 
-**Manual entries are excluded from the freshness check.** Otherwise adding a row by hand
-would hide the automation having stopped, which defeats the only warning the 7-day signing
-expiry gives. The diagnostics screen shows both timestamps separately.
+```
+Manual | <amount> | <yyyy-MM-dd> | <cardSuffix> | <merchant>
+```
+
+`ManualEntryParser` reads it back on the next drain. That is more work than writing the row
+directly, and it buys the whole point: a hand-entered charge is then an ordinary charge. It is
+restored by a rebuild, covered by the retention window, removed from the raw journal when
+deleted, and re-readable on any later launch. A row written straight into the store would do
+none of those things and would be the one kind of row with its own rules.
+
+**The merchant goes last, deliberately.** It is free text a person typed, so it may contain
+anything — including the delimiter. Putting it at the end means everything after the fourth
+field is the merchant, with nothing to escape or reject.
+
+The amount is written as a canonical decimal built by hand rather than by `FormatStyle`, which
+is locale-aware and would produce `1204,99` on a comma-decimal device — a value the parser
+correctly rejects, breaking the round trip.
 
 ## Diagnostics
 

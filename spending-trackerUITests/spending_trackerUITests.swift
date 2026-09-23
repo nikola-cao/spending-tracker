@@ -32,10 +32,41 @@ final class spending_trackerUITests: XCTestCase {
 
         XCTAssertTrue(app.navigationBars["Add manually"].waitForExistence(timeout: 5))
 
-        // The Record button must be disabled until there is something to record.
-        let record = app.buttons["Record"]
-        XCTAssertTrue(record.waitForExistence(timeout: 5))
-        XCTAssertFalse(record.isEnabled, "Record should be disabled while the field is empty")
+        // Every field is present, and Save stays disabled until they are filled in.
+        XCTAssertTrue(app.textFields["Merchant"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["Amount"].exists)
+        XCTAssertTrue(app.textFields["Last 4 or 5 digits"].exists)
+
+        let save = app.buttons["Save"]
+        XCTAssertTrue(save.waitForExistence(timeout: 5))
+        XCTAssertFalse(save.isEnabled, "Save should be disabled while the form is empty")
+    }
+
+    /// The card rule the form enforces: four or five digits, nothing else.
+    @MainActor
+    func testCardFieldRejectsTooFewDigits() throws {
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["Add manually"].tap()
+
+        let merchant = app.textFields["Merchant"]
+        XCTAssertTrue(merchant.waitForExistence(timeout: 5))
+        merchant.tap()
+        merchant.typeText("UITEST MERCHANT")
+
+        let amount = app.textFields["Amount"]
+        amount.tap()
+        amount.typeText("1.00")
+
+        let save = app.buttons["Save"]
+        let card = app.textFields["Last 4 or 5 digits"]
+
+        card.tap()
+        card.typeText("123")
+        XCTAssertFalse(save.isEnabled, "three digits should not be enough")
+
+        card.typeText("4")
+        XCTAssertTrue(save.isEnabled, "four digits should be enough")
     }
 
     /// Adds a charge through the real UI and deletes it through the real UI. Unit tests cover
@@ -48,12 +79,21 @@ final class spending_trackerUITests: XCTestCase {
         app.launch()
 
         app.buttons["Add manually"].tap()
-        let editor = app.textViews.firstMatch
-        XCTAssertTrue(editor.waitForExistence(timeout: 5))
-        editor.tap()
-        editor.typeText("Fidelity Credit Card: Your card ending in 7224 was charged "
-                       + "$4.44 at UITEST MERCHANT.")
-        app.buttons["Record"].tap()
+
+        let merchant = app.textFields["Merchant"]
+        XCTAssertTrue(merchant.waitForExistence(timeout: 5))
+        merchant.tap()
+        merchant.typeText("UITEST MERCHANT")
+
+        let amount = app.textFields["Amount"]
+        amount.tap()
+        amount.typeText("4.44")
+
+        let card = app.textFields["Last 4 or 5 digits"]
+        card.tap()
+        card.typeText("7224")
+
+        app.buttons["Save"].tap()
         app.buttons["Cancel"].tap()
 
         let row = app.staticTexts["UITEST MERCHANT"]

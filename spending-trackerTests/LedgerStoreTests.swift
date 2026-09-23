@@ -572,6 +572,78 @@ struct LedgerStoreTests {
         #expect(diag.lastManualEntry != nil)
     }
 
+    // MARK: - Manual charges from the form
+
+    @Test func aManualChargeTakesTheSamePipeline() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.appendManualCharge(
+            merchant: "HAND TYPED", amount: "12.34", date: Date(), cardSuffix: "7224")
+
+        let result = ledger.drain()
+
+        #expect(result.transactionsAdded == 1)
+        let stored = try #require(txns(container).first)
+        #expect(stored.merchant == "HAND TYPED")
+        #expect(stored.amountMinor == 1234)
+        #expect(stored.cardSuffix == "7224")
+
+        // Written to the journal like anything else, which is what makes it survive a rebuild,
+        // fall under the retention window, and be deletable — none of which a row written
+        // straight into the store would do.
+        let journal = try #require(JournalStore.readAll(from: url).first)
+        #expect(journal.rawText.hasPrefix("Manual | "))
+    }
+
+    @Test func aManualChargeCanBeDeletedLikeAnyOther() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.appendManualCharge(
+            merchant: "HAND TYPED", amount: "12.34", date: Date(), cardSuffix: "7224")
+        ledger.drain()
+        #expect(txns(container).count == 1)
+
+        ledger.delete(txns(container))
+        ledger.drain()
+
+        #expect(txns(container).isEmpty)
+        #expect(JournalStore.readAll(from: url).isEmpty)
+    }
+
+    @Test func aManualChargeCanBeReadBackAfterARebuild() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.appendManualCharge(
+            merchant: "HAND TYPED", amount: "12.34", date: Date(), cardSuffix: "7224")
+        ledger.drain()
+        #expect(txns(container).count == 1)
+
+        // A fresh store reading the SAME journal is what a rebuild looks like: the journal is
+        // the only thing that carries over. (`makeStore()` would hand back a different, empty
+        // journal, which tests nothing.)
+        let freshContainer = try ModelContainer(
+            for: Schema([AlertEvent.self, Txn.self]),
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        LedgerStore(container: freshContainer, journalURL: url).drain()
+
+        #expect(txns(freshContainer).count == 1)
+        #expect(txns(freshContainer).first?.merchant == "HAND TYPED")
+    }
+
+    @Test func knownCardsComeFromWhatWasActuallyCaptured() throws {
+        let (ledger, _, url) = try makeStore()
+        try appendAlert(charge("2.50", "A", last4: "7224"), to: url)
+        try appendAlert(amexAlert("PUBLIX", "14.20"), to: url)   // card 21006
+        ledger.drain()
+
+        // Includes a card only ever seen through an automation — that is the point of reading
+        // this from the ledger rather than from the form's own history.
+        #expect(Set(ledger.knownCardSuffixes()) == ["7224", "21006"])
+    }
+
+    @Test func knownCardsAreEmptyBeforeAnythingIsCaptured() throws {
+        let (ledger, _, _) = try makeStore()
+        #expect(ledger.knownCardSuffixes().isEmpty)
+    }
+
     @Test func diagnosticsCountWhatActuallyHappened() throws {
         let (ledger, _, url) = try makeStore()
         try appendAlert(charge("2.50", "A"), to: url)
