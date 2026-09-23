@@ -47,13 +47,12 @@ final class Txn {
 
     /// When the alert **arrived** — the Shortcut handing it to the app.
     ///
-    /// This is the feed's sort key. Kept separate from `occurredAt` because the two answer
-    /// different questions, and only this one is always present.
+    /// The feed's tie-break, and the whole of its order within a day. See `feedOrder`.
     ///
-    /// It has to be its own field. Sorting on `occurredAt` meant every Amex row on a given day
-    /// shared one identical value — the message prints a date and no time, so the parsed value
-    /// lands at noon — and identical sort keys leave the order arbitrary, which put new rows
-    /// *underneath* older ones. Arrival order is what the user actually reads the list for.
+    /// It has to be its own field. Every Amex row on a given day shares one identical
+    /// `occurredAt` — the message prints a date and no time, so the parsed value lands at noon
+    /// — and identical sort keys leave the order arbitrary, which put new rows *underneath*
+    /// older ones. Arrival order is what the user actually reads the list for.
     var receivedAt: Date = Date()
 
     /// The best-known time of the purchase.
@@ -62,7 +61,8 @@ final class Txn {
     /// arrived. The two are not the same claim, which is why `occurredAtIsFromMessage`
     /// exists and why the row labels them differently.
     ///
-    /// Display only — never sort on this.
+    /// The feed sorts on its calendar **day**, never on the instant — see `feedOrder` for why
+    /// the time of day in here cannot be trusted.
     var occurredAt: Date = Date()
 
     /// True when `occurredAt` came from the message rather than from arrival.
@@ -118,6 +118,39 @@ extension Txn {
             occurredAtIsFromMessage: alert.occurredAt != nil,
             parserVersion: alert.parserVersion
         )
+    }
+
+    /// The feed's order: by the day the charge belongs to, newest first, and within a day by
+    /// the order the charges arrived in the app.
+    ///
+    /// The day is `occurredAt`'s calendar day — the purchase date when the source printed one
+    /// (Amex, and a hand-entered date), and the arrival day otherwise, since the Fidelity SMS
+    /// carries no date at all.
+    ///
+    /// Within a day the order is arrival, never a clock time, and that is the whole point. No
+    /// row in this ledger has a time of day that means anything: the two sources that print a
+    /// date print no time, so both parsers land those at noon, and the SMS prints nothing, so
+    /// its `occurredAt` *is* its arrival. Ordering by the instant therefore either compares
+    /// identical values or compares a real arrival against a fabricated noon — and the moment
+    /// a single date-only row lands in a day it reshuffles the rows around it. Arrival is the
+    /// one signal that is always real, and for the SMS it is within seconds of the purchase.
+    ///
+    /// One comparison over a whole-row key, deliberately, rather than the pairwise rule "both
+    /// have times → compare times, otherwise compare arrival". That rule is not transitive —
+    /// given A(14:00, arrived 1st), B(16:00, arrived 3rd) and C(date-only, arrived 2nd) it
+    /// wants A<B by time, B<C by arrival, and C<A by arrival at once — and an inconsistent
+    /// comparator is undefined behaviour inside `sorted(by:)`, not merely a wrong order.
+    static func feedOrder(_ txns: [Txn]) -> [Txn] {
+        let calendar = Calendar.current
+        // Keyed up front rather than inside the comparator, which would recompute the
+        // calendar day O(n log n) times.
+        return txns
+            .map { (day: calendar.startOfDay(for: $0.occurredAt), arrived: $0.receivedAt, txn: $0) }
+            .sorted { lhs, rhs in
+                if lhs.day != rhs.day { return lhs.day > rhs.day }
+                return lhs.arrived > rhs.arrived
+            }
+            .map(\.txn)
     }
 
     /// For display only. `Decimal` avoids the float rounding that minor units exist to

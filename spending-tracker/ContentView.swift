@@ -19,12 +19,14 @@ struct ContentView: View {
     /// resolve to a charge has no `Txn` at all — so unlike the query below, this cannot
     /// accidentally include something that is not a transaction.
     ///
-    /// Sorted by **arrival**, newest first. The list is a log of what came in, so the order
-    /// has to match the order it was received in. Sorting by transaction time failed that:
-    /// every Amex row on a day shares one parsed date, so same-day rows had identical sort
-    /// keys and new ones landed underneath old ones.
+    /// Sorted by arrival only to give the rows a stable base order; the order the feed
+    /// actually uses is imposed by `feedOrder`. That one needs a calendar to reduce each row
+    /// to a day, which a `SortDescriptor` cannot express, so it is applied here instead.
     @Query(sort: [SortDescriptor(\Txn.receivedAt, order: .reverse)])
     private var transactions: [Txn]
+
+    /// The rows in the order the feed shows them. See `Txn.feedOrder`.
+    private var orderedTransactions: [Txn] { Txn.feedOrder(transactions) }
 
     @State private var isShowingJournal = false
     @State private var isShowingManualEntry = false
@@ -169,11 +171,17 @@ struct ContentView: View {
                 }
             }
         } else {
+            // Bound once and used for both the rows and the offsets, so a swipe can only ever
+            // resolve against the array that was actually drawn. Two evaluations of
+            // `orderedTransactions` could disagree, and then the swipe deletes the wrong row.
+            let rows = orderedTransactions
             Section {
-                ForEach(transactions) { txn in
+                ForEach(rows) { txn in
                     TxnRow(txn: txn)
                 }
-                .onDelete(perform: deleteTransactions)
+                .onDelete { offsets in
+                    deleteTransactions(at: offsets, in: rows)
+                }
             } header: {
                 Text(chargesHeader)
             } footer: {
@@ -185,8 +193,8 @@ struct ContentView: View {
 
     /// Deleting a charge has to remove its journal line too — the store is derived, and the
     /// next drain would otherwise recreate the row from the journal within seconds.
-    private func deleteTransactions(at offsets: IndexSet) {
-        ledger.delete(offsets.map { transactions[$0] })
+    private func deleteTransactions(at offsets: IndexSet, in rows: [Txn]) {
+        ledger.delete(offsets.map { rows[$0] })
     }
 
     /// Hoisted out of the `ViewBuilder`: an interpolated ternary inside one is what blows the
