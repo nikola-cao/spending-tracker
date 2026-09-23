@@ -9,7 +9,7 @@ import CryptoKit
 import Foundation
 import SwiftData
 
-/// Drains the append-only journal into SwiftData.
+/// Drains the append-only journal into SwiftData, and compacts the journal as it goes.
 ///
 /// **The App Intent is deliberately not involved.** It keeps writing raw text to the journal
 /// exactly as it did in Stage 1, and this runs in the app when it becomes active. Three
@@ -25,10 +25,15 @@ import SwiftData
 ///    default init), SwiftData writes from a non-main actor, and a second process opening the
 ///    same store.
 ///
-/// The journal stays the source of truth. The store is *derived* and can be rebuilt from it.
-///
 /// Adding a second source (Amex email) required no change to this shape at all: a source is a
 /// parser, and the journal does not care where a body came from.
+///
+/// **Only charges are kept.** Everything else the automations capture — a merchant's own
+/// confirmation email for a purchase already recorded, a statement notice, an OTP — is
+/// counted, dropped, and then removed from the journal. That was a deliberate choice against
+/// the alternative of keeping unparseable bodies for review, and the cost is real: a genuine
+/// charge that stops parsing now disappears with no trace rather than showing up as
+/// unreadable. See the README.
 @MainActor
 final class LedgerStore {
 
@@ -36,9 +41,10 @@ final class LedgerStore {
         var recordsRead = 0
         var eventsAdded = 0
         var transactionsAdded = 0
-        var needsReview = 0
-        /// Events re-derived because they were recorded by an older parser.
-        var repaired = 0
+        /// Bodies that resolved to no charge, and so were recorded nowhere.
+        var notCharges = 0
+        /// Journal lines removed by compaction.
+        var journalLinesDropped = 0
         /// Non-nil when the store refused the write. Surfaced in the UI rather than
         /// swallowed: a silent save failure renders a complete-looking ledger that is not on
         /// disk and vanishes at relaunch.
@@ -57,8 +63,8 @@ final class LedgerStore {
     /// twice. Flagged, never merged — see `Txn.possibleDuplicate`.
     private static let duplicateWindow: TimeInterval = 300
 
-    /// Reads the journal and adds anything not already recorded. Idempotent, so it is safe to
-    /// call on every foreground.
+    /// Reads the journal, records any charge not already recorded, and drops the rest.
+    /// Idempotent, so it is safe to call on every foreground.
     ///
     /// Fully synchronous, and therefore non-reentrant by construction: there is no `await`
     /// anywhere below, so the three call sites (`.task`, `scenePhase`, pull-to-refresh) cannot
@@ -71,12 +77,9 @@ final class LedgerStore {
         let records = JournalStore.readAll(from: journalURL)
         result.recordsRead = records.count
 
-        // Reprocessing runs even when the journal is empty: an event left unparsed by an older
-        // parser must still be repaired, and an early return here would strand it forever.
         if !records.isEmpty {
             ingest(records, into: context, result: &result)
         }
-        result.repaired = reprocessStaleEvents(in: context)
 
         do {
             try context.save()
@@ -85,7 +88,12 @@ final class LedgerStore {
             // The journal is untouched, so the next drain retries from scratch.
             context.rollback()
             result.saveError = error.localizedDescription
+            return result
         }
+
+        // Compaction runs only AFTER the store has accepted the write. If the save failed the
+        // journal is the only copy of anything, so nothing may be dropped from it.
+        result.journalLinesDropped = compact(records)
         return result
     }
 
@@ -96,17 +104,30 @@ final class LedgerStore {
     ) {
         var known = knownOccurrences(in: context)
 
+        // One invocation writes an `enter` and a `result` line carrying the same body. For a
+        // charge the occurrence key collapses the pair, but a body that is NOT a charge records
+        // no key at all — so without this the pair would be parsed, counted and compacted as
+        // two separate things.
+        var seenInvocations = Set<UUID>()
+
         for record in records {
             let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !body.isEmpty else { continue }
+            guard seenInvocations.insert(record.runID).inserted else { continue }
 
-            // One body can carry more than one alert — bodies have been observed concatenated
-            // with no separator. `nil` stands for "nothing recognisable here", so a body that
-            // parses to nothing still becomes an event and its raw text is kept for review.
-            let parsed = AlertParsers.parseAll(body)
-            let matches: [ParsedAlert?] = parsed.isEmpty ? [nil] : parsed
+            // Only charges are recorded. The index is the position in the FULL parse rather
+            // than in the filtered list, so an occurrence key stays stable if a body's mix of
+            // charges and non-charges ever changes.
+            let charges = AlertParsers.parseAll(body)
+                .enumerated()
+                .filter { $0.element.isCharge }
 
-            for (index, alert) in matches.enumerated() {
+            guard !charges.isEmpty else {
+                result.notCharges += 1
+                continue
+            }
+
+            for (index, alert) in charges {
                 // Keyed on the INVOCATION, not the body. See `AlertEvent.occurrenceKey` for
                 // why: a body is not unique per transaction, so keying on it silently dropped
                 // every repeat charge — a monthly subscription would be recorded once, ever.
@@ -120,16 +141,11 @@ final class LedgerStore {
                     matchIndex: index,
                     body: body,
                     contentHash: Self.contentHash(body),
-                    parseState: .needsReview,
+                    parseState: .parsed,
                     parserVersion: AlertParsers.version
                 )
                 context.insert(event)
                 result.eventsAdded += 1
-
-                guard let alert, alert.isCharge else {
-                    result.needsReview += 1
-                    continue
-                }
 
                 let txn = Txn(from: alert, receivedAt: record.receivedAt)
                 // Computed BEFORE the row is inserted or wired up, so the fetch cannot see it.
@@ -138,40 +154,36 @@ final class LedgerStore {
 
                 txn.event = event
                 event.transaction = txn
-                event.parseStateRaw = AlertParseState.parsed.rawValue
                 result.transactionsAdded += 1
             }
         }
     }
 
-    /// Re-derives transactions for events that were recorded by an older parser.
+    /// Drops journal lines that are not charges.
     ///
-    /// Without this, "the raw text is kept so a parser fix can recover these" is a promise the
-    /// code cannot keep: the occurrence guard skips any event already recorded, so an alert
-    /// that failed to parse would stay unparsed forever no matter how good the parser became.
-    /// This is what makes the journal genuinely replayable rather than merely retained — and it
-    /// is what let a second source (Amex) start parsing bodies the first parser had rejected.
-    private func reprocessStaleEvents(in context: ModelContext) -> Int {
-        let version = AlertParsers.version
-        let descriptor = FetchDescriptor<AlertEvent>(
-            predicate: #Predicate { $0.transaction == nil && $0.parserVersion < version }
-        )
-        guard let stale = try? context.fetch(descriptor), !stale.isEmpty else { return 0 }
+    /// Runs over the records the drain already read, so it costs nothing extra to decide.
+    /// `JournalStore.replace` swaps the file in atomically, so an interruption leaves the
+    /// original intact.
+    ///
+    /// This is the one place in the app that deliberately discards captured text. It is
+    /// confined to the journal, and only ever removes bodies that resolved to no charge.
+    private func compact(_ records: [JournalRecord]) -> Int {
+        guard !records.isEmpty else { return 0 }
 
-        var repaired = 0
-        for event in stale {
-            event.parserVersion = version
-            guard let alert = AlertParsers.parseFirst(event.body), alert.isCharge else { continue }
-
-            let txn = Txn(from: alert, receivedAt: event.receivedAt)
-            txn.possibleDuplicate = hasNearbyEqual(txn, in: context)
-            context.insert(txn)
-            txn.event = event
-            event.transaction = txn
-            event.parseStateRaw = AlertParseState.parsed.rawValue
-            repaired += 1
+        let kept = records.filter { record in
+            let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { return false }
+            return AlertParsers.parseAll(body).contains(where: \.isCharge)
         }
-        return repaired
+
+        guard kept.count < records.count else { return 0 }
+        do {
+            try JournalStore.replace(contentsOf: journalURL, with: kept)
+        } catch {
+            // Losing the compaction is harmless — the lines are simply dropped next time.
+            return 0
+        }
+        return records.count - kept.count
     }
 
     // MARK: - Manual entry
@@ -210,7 +222,6 @@ final class LedgerStore {
     struct Diagnostics: Equatable {
         var eventCount = 0
         var transactionCount = 0
-        var needsReviewCount = 0
         var parserVersion = 0
         var journalLines = 0
         var journalBytes = 0
@@ -225,7 +236,6 @@ final class LedgerStore {
 
         result.eventCount = (try? context.fetchCount(FetchDescriptor<AlertEvent>())) ?? 0
         result.transactionCount = (try? context.fetchCount(FetchDescriptor<Txn>())) ?? 0
-        result.needsReviewCount = result.eventCount - result.transactionCount
         result.parserVersion = AlertParsers.version
 
         let records = JournalStore.readAll(from: journalURL)

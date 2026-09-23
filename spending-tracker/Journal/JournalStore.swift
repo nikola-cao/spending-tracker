@@ -53,6 +53,40 @@ nonisolated enum JournalStore {
         try handle.synchronize()
     }
 
+    /// Atomically replaces the journal's contents.
+    ///
+    /// The journal is the one thing in this app that must never lose data, so this does not
+    /// rewrite it in place. It writes the replacement alongside the original and swaps it in
+    /// with a single rename, so an interruption — a crash, a kill, the app being suspended
+    /// mid-write — leaves the original intact rather than a half-written file.
+    static func replace(contentsOf url: URL, with records: [JournalRecord]) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+
+        var data = Data()
+        for record in records {
+            data.append(try encoder.encode(record))
+            data.append(0x0A)
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let staging = directory.appending(path: "journal.jsonl.replacing")
+        try? FileManager.default.removeItem(at: staging)
+        try data.write(to: staging, options: .atomic)
+
+        if FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: staging)
+        } else {
+            try FileManager.default.moveItem(at: staging, to: url)
+        }
+    }
+
     /// Returns records in FILE ORDER, which is authoritative — see the note on timestamps above.
     ///
     /// Undecodable lines are dropped rather than thrown on, so a single torn write at the

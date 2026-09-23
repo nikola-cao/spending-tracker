@@ -73,6 +73,22 @@ struct LedgerStoreTests {
         """
     }
 
+    /// A merchant's own booking confirmation, which the Email automation also captures
+    /// alongside the Amex alert for the same purchase. Trimmed from a real one.
+    private var merchantReceipt: String {
+        """
+        You're all set for Gatlinburg
+        Charm of Gatlinburg Mountain Retreat condo
+        Price breakdown
+        $172.00 x 3 nights
+        Total (USD)
+        $515.66
+        Payment
+        Amex 1008
+        September 22, 2026, 8:39:03 PM EDT
+        """
+    }
+
     private func makeStore() throws -> (ledger: LedgerStore, container: ModelContainer, url: URL) {
         let container = try ModelContainer(
             for: Schema([AlertEvent.self, Txn.self]),
@@ -180,25 +196,27 @@ struct LedgerStoreTests {
         #expect(result.saveError == nil)
     }
 
-    // MARK: - What must NOT reach the ledger
+    // MARK: - What is recorded nowhere
+    //
+    // Note the scope: a body that resolves to no charge is recorded NOWHERE, and the drain
+    // also removes it from the journal. That was a deliberate choice over keeping unreadable
+    // bodies for review, and its cost is real — a genuine charge that stops parsing now
+    // disappears without a trace rather than showing up as unreadable. See the README.
 
-    @Test func unreadableBodyKeepsTheEventButDerivesNoTransaction() throws {
+    @Test func aBodyWithNoChargeIsRecordedNowhere() throws {
         let (ledger, container, url) = try makeStore()
         try appendAlert("Your Uber code is 1234", to: url)
 
         let result = ledger.drain()
 
-        // The raw text is kept — that is what makes a later parser fix able to recover it.
-        #expect(result.eventsAdded == 1)
-        #expect(result.needsReview == 1)
+        #expect(result.notCharges == 1)
+        #expect(result.eventsAdded == 0)
         #expect(result.transactionsAdded == 0)
-        #expect(events(container).count == 1)
+        #expect(events(container).isEmpty)
         #expect(txns(container).isEmpty)
-        #expect(events(container).first?.transaction == nil)
-        #expect(events(container).first?.parseState == .needsReview)
     }
 
-    @Test func nonChargeVerbIsKeptForReviewAndNotLedgered() throws {
+    @Test func aNonChargeVerbIsRecordedNowhere() throws {
         let (ledger, container, url) = try makeStore()
         try appendAlert(
             "Fidelity\u{00AE} Credit Card: Your card ending in 7224 was declined $12.00 at AMAZON.COM*MK1A2B3C4." + trailer,
@@ -207,16 +225,28 @@ struct LedgerStoreTests {
 
         let result = ledger.drain()
 
-        // It parses, but it is not a charge, so it must not reach the ledger. That invariant —
-        // "Txn contains only charges" — is what lets the feed query need no predicate, and a
-        // forgotten predicate is how an unparsed row would silently pollute a total.
-        #expect(result.needsReview == 1)
+        #expect(result.notCharges == 1)
         #expect(result.transactionsAdded == 0)
         #expect(txns(container).isEmpty)
+        #expect(events(container).isEmpty)
+    }
+
+    /// A merchant confirmation — the exact shape the Email automation captures for the very
+    /// purchases Amex also alerts on. It carries the right amount and a date, and is still
+    /// recorded nowhere.
+    @Test func aMerchantReceiptIsRecordedNowhere() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(merchantReceipt, to: url)
+
+        let result = ledger.drain()
+
+        #expect(result.notCharges == 1)
+        #expect(txns(container).isEmpty)
+        #expect(events(container).isEmpty)
     }
 
     /// The intent journals a rejected empty invocation with a note rather than dropping it.
-    /// That record must not become an event.
+    /// That record must not become an event, and must not survive compaction either.
     @Test func emptyBodiesAreSkippedEntirely() throws {
         let (ledger, container, url) = try makeStore()
         try appendAlert("", to: url)
@@ -226,49 +256,56 @@ struct LedgerStoreTests {
 
         #expect(result.eventsAdded == 0)
         #expect(events(container).isEmpty)
+        #expect(JournalStore.readAll(from: url).isEmpty)
     }
 
-    // MARK: - Replay
+    // MARK: - Journal compaction
+    //
+    // Nothing but charges is kept, so the journal is rewritten to match. The journal is the
+    // one thing in this app that must never lose data, so the properties worth pinning are
+    // that it happens at all, and that it never runs when a write failed.
 
-    /// "The raw text is kept so a parser fix can recover these" is only true if something
-    /// actually re-reads it. The occurrence guard skips any event already recorded, so
-    /// without the version check a failed parse would stay failed forever.
-    @Test func anEventLeftByAnOlderParserIsReDerived() throws {
-        let (ledger, container, _) = try makeStore()   // no journal on purpose: see below
-        let body = charge("2.50", "BREEZE*00HS5MV")
+    @Test func theJournalDropsBodiesThatAreNotCharges() throws {
+        let (ledger, _, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)   // 2 lines, kept
+        try appendAlert("Your Uber code is 1234", to: url)           // 2 lines, dropped
 
-        // Stand in for an event the previous parser could not read.
-        let stale = AlertEvent(
-            receivedAt: Date(),
-            runID: UUID(),
-            matchIndex: 0,
-            body: body,
-            contentHash: LedgerStore.contentHash(body),
-            parseState: .needsReview,
-            parserVersion: AlertParsers.version - 1
-        )
-        container.mainContext.insert(stale)
-        try container.mainContext.save()
-        #expect(txns(container).isEmpty)
+        #expect(JournalStore.readAll(from: url).count == 4)
 
-        // No journal at all — reprocessing must not depend on one.
         let result = ledger.drain()
 
-        #expect(result.repaired == 1)
-        #expect(txns(container).count == 1)
-        #expect(events(container).first?.parserVersion == AlertParsers.version)
-        #expect(events(container).first?.parseState == .parsed)
+        #expect(result.journalLinesDropped == 2)
+        let kept = JournalStore.readAll(from: url)
+        #expect(kept.count == 2)
+        #expect(kept.allSatisfy { $0.rawText.contains("BREEZE") })
     }
 
-    @Test func anEventAlreadyCurrentIsNotReprocessed() throws {
-        let (ledger, container, url) = try makeStore()
-        try appendAlert("Your Uber code is 1234", to: url)
+    @Test func compactionLeavesOnlyCharges() throws {
+        let (ledger, _, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
+        try appendAlert(amexAlert("PUBLIX", "14.20"), to: url)
+        try appendAlert(merchantReceipt, to: url)
+
         ledger.drain()
 
-        // Current version, still unparseable — reprocessing must not spin on it forever.
+        let kept = JournalStore.readAll(from: url)
+        #expect(kept.count == 4)   // two charges, an enter/result pair each
+        for record in kept {
+            #expect(AlertParsers.parseFirst(record.rawText)?.isCharge == true)
+        }
+    }
+
+    /// Compaction is destructive, so a journal that is already all-charges is left byte-for-byte
+    /// alone rather than rewritten on every foreground.
+    @Test func anAllChargeJournalIsNotRewritten() throws {
+        let (ledger, _, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
+        let before = try Data(contentsOf: url)
+
         let result = ledger.drain()
-        #expect(result.repaired == 0)
-        #expect(txns(container).isEmpty)
+
+        #expect(result.journalLinesDropped == 0)
+        #expect(try Data(contentsOf: url) == before)
     }
 
     // MARK: - Duplicates
@@ -417,11 +454,11 @@ struct LedgerStoreTests {
         ledger.drain()
         let diag = ledger.diagnostics()
 
-        #expect(diag.eventCount == 2)
+        // One charge recorded; the unreadable body is nowhere, including in the journal count.
+        #expect(diag.eventCount == 1)
         #expect(diag.transactionCount == 1)
-        #expect(diag.needsReviewCount == 1)
         #expect(diag.parserVersion == AlertParsers.version)
-        #expect(diag.journalLines == 4)
+        #expect(diag.journalLines == 2)
         #expect(diag.journalBytes > 0)
     }
 }

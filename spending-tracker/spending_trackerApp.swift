@@ -37,7 +37,9 @@ struct spending_trackerApp: App {
     /// while the Amex rows, drained afterwards, looked fine. Nothing errored and nothing
     /// warned; the ledger simply displayed `··` for half its rows.
     /// 2 — added `Txn.receivedAt`, so the feed can sort by arrival.
-    static let ledgerSchemaVersion = 2
+    /// 3 — the ledger now records only charges, so a rebuild clears the non-charge events
+    ///     an earlier version had already stored.
+    static let ledgerSchemaVersion = 3
 
     private static let schemaVersionKey = "ledgerSchemaVersion"
 

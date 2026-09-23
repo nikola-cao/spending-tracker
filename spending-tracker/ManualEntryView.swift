@@ -80,10 +80,10 @@ struct ManualEntryView: View {
             Section {
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Recorded, but not read as a charge")
+                        Text("Not read as a charge")
                             .font(.subheadline.weight(.medium))
-                        Text("The message is safe in the journal and will appear under "
-                             + "\"not read as a charge\". Nothing was added to the ledger.")
+                        Text("Nothing was added to the ledger, and this text will be "
+                             + "discarded on the next refresh. Only charges are kept.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

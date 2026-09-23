@@ -67,7 +67,6 @@ struct DiagnosticsView: View {
         Section("Ledger") {
             row("Alerts received", "\(diag.eventCount)")
             row("Charges recorded", "\(diag.transactionCount)")
-            row("Not read as a charge", "\(diag.needsReviewCount)")
             row("Parser version", "\(diag.parserVersion)")
         }
     }

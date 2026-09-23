@@ -26,15 +26,6 @@ struct ContentView: View {
     @Query(sort: [SortDescriptor(\Txn.receivedAt, order: .reverse)])
     private var transactions: [Txn]
 
-    /// Alerts that arrived but did not resolve to a charge: an unparseable body, or a verb
-    /// that is not "charged". Kept visible rather than dropped, because the whole point of
-    /// the parser rejecting ambiguous input is that the rejection should be *seen*.
-    @Query(
-        filter: #Predicate<AlertEvent> { $0.transaction == nil },
-        sort: [SortDescriptor(\AlertEvent.receivedAt, order: .reverse)]
-    )
-    private var unresolved: [AlertEvent]
-
     @State private var lastCapture: Date?
     @State private var isShowingJournal = false
     @State private var isShowingManualEntry = false
@@ -46,7 +37,6 @@ struct ContentView: View {
             List {
                 freshnessSection
                 saveErrorSection
-                if !unresolved.isEmpty { needsReviewSection }
                 transactionsSection
             }
             .navigationTitle("Spending")
@@ -174,9 +164,7 @@ struct ContentView: View {
                 ContentUnavailableView {
                     Label("No charges yet", systemImage: "creditcard")
                 } description: {
-                    Text(unresolved.isEmpty
-                         ? "Alerts captured by the automation will appear here."
-                         : "Alerts arrived but none could be read as a charge.")
+                    Text("Alerts captured by the automation will appear here.")
                 }
             }
         } else {
@@ -197,29 +185,6 @@ struct ContentView: View {
         return "\(transactions.count) \(noun)"
     }
 
-    private var needsReviewSection: some View {
-        Section {
-            ForEach(unresolved) { event in
-                VStack(alignment: .leading, spacing: 4) {
-                    // Extracted, not raw. An email body is a 50 KB HTML document, and showing
-                    // it verbatim buries the one line a person needs to read. The raw text is
-                    // still in the journal, which is where it matters.
-                    Text(HTMLText.extract(from: event.body))
-                        .font(.footnote)
-                        .lineLimit(4)
-                    Text(event.receivedAt, format: .dateTime.month().day().hour().minute())
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 2)
-            }
-        } header: {
-            Label("\(unresolved.count) not read as a charge", systemImage: "questionmark.circle")
-        } footer: {
-            Text("The raw text is kept, so a parser fix can recover these.")
-                .font(.caption2)
-        }
-    }
 }
 
 private struct TxnRow: View {

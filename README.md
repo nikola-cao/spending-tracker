@@ -96,14 +96,28 @@ Under the **⋯** menu. Answers the two questions no other screen can — *is th
 still capturing*, and *is anything arriving the parser can't read*. Both failures are
 otherwise silent: the Shortcut keeps firing, or the alert is simply absent.
 
-Shows last captured, last manual entry, counts of alerts/charges/not-read, the parser
-version in force, and the journal's size. The journal can be shared out from here.
+Shows last captured, last manual entry, counts of alerts and charges, the parser version in
+force, and the journal's size. The journal can be shared out from here.
+
+## Only charges are kept
+
+A body that resolves to no charge — a merchant's own confirmation email for a purchase Amex
+already reported, a statement notice, an OTP — is recorded **nowhere**. It gets no row, no
+entry in any list, and the drain then removes it from the journal too.
+
+**This has a cost worth stating plainly.** A genuine Fidelity or Amex charge that stops
+parsing will now disappear silently rather than appearing as unreadable. The alternative was
+keeping unreadable bodies for review, which is what an earlier version did; the choice was
+made deliberately, and the way to notice a parser regression is a charge you know you made
+that is missing from the feed.
+
+The journal is the one thing in this app that must never lose data, so compaction is written
+accordingly: it builds the replacement alongside the original and swaps it in with a single
+rename, and it refuses to run at all if the store rejected the write — at that point the
+journal is the only copy of anything.
 
 ## Still missing
 
-- **Review-queue actions.** "Not read as a charge" is currently informational — there is no
-  way to act on a row. Worth building once real alerts exist and it's visible what actually
-  needs review.
 - **Statement import and reconciliation.** The plan's ledger of record, but it needs a real
   statement export first. Building an importer against a guessed CSV format is the same
   mistake the parser nearly made before real messages arrived.
@@ -187,8 +201,9 @@ schedule rather than by push.
   ledger of record.
 - **The Email automation catches more than Amex.** Its filter is set to
   `AmericanExpress@welcome.americanexpress.com`, yet merchant receipts are being captured too.
-  Harmless — the parser refuses them and they land in "not read as a charge" — but the
-  automation is broader than configured, and that list will slowly fill with them.
+  Harmless — the parser refuses them and they are dropped — but the automation is broader
+  than configured, and each one is a ~60 KB email being written to the journal and then
+  compacted away again on the next refresh.
 
 Everything else is ordinary app work.
 
