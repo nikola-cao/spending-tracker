@@ -28,9 +28,15 @@ struct ContentView: View {
     /// The rows in the order the feed shows them. See `Txn.feedOrder`.
     private var orderedTransactions: [Txn] { Txn.feedOrder(transactions) }
 
+    /// The bank balance, kept outside the store so a schema bump cannot take it — see
+    /// `BankBalance`. `UserDefaults` rather than the journal, because this is not an alert
+    /// that arrived; it is a number the user typed.
+    @AppStorage(BankBalance.defaultsKey) private var bankBalanceMinor = 0
+
     @State private var isShowingJournal = false
     @State private var isShowingManualEntry = false
     @State private var isShowingDiagnostics = false
+    @State private var isShowingBankBalance = false
     @State private var saveError: String?
 
     var body: some View {
@@ -74,6 +80,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $isShowingJournal) {
                 NavigationStack { JournalView() }
+            }
+            .sheet(isPresented: $isShowingBankBalance) {
+                BankBalanceView(minorUnits: $bankBalanceMinor)
             }
             .task { refresh() }
             // Draining on foreground is what turns the raw journal into ledger rows. It is
@@ -125,7 +134,10 @@ struct ContentView: View {
     /// Amex email, and the alert's arrival for Fidelity, whose SMS carries no date at all.
     /// Deliberately NOT `receivedAt`, which is when we heard about it; a charge that arrives
     /// late still belongs to the month it was made in.
-    private var monthSpend: (total: String, count: Int, name: String) {
+    ///
+    /// No charge count here. It was one line of redundancy with the list's own header, which
+    /// states the same number directly above the rows it counts.
+    private var monthSpend: (total: String, name: String) {
         let calendar = Calendar.current
         let now = Date()
         let thisMonth = transactions.filter {
@@ -134,23 +146,54 @@ struct ContentView: View {
         let minor = thisMonth.reduce(0) { $0 + $1.amountMinor }
         return (
             total: (Decimal(minor) / 100).formatted(.currency(code: "USD")),
-            count: thisMonth.count,
             name: now.formatted(.dateTime.month(.wide).year())
         )
     }
 
+    private var formattedBankBalance: String {
+        (Decimal(bankBalanceMinor) / 100).formatted(.currency(code: "USD"))
+    }
+
+    /// Two figures: what has been spent this month, and what is in the bank. Each is written
+    /// out as a plain `Text` rather than through a shared helper — a helper returning a
+    /// different view per branch is exactly the kind of multi-branch builder that blows the
+    /// type checker's time budget here, and there are only two of them.
     private var totalSpendSection: some View {
         let spend = monthSpend
         return Section {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(spend.total)
-                    .font(.largeTitle.weight(.semibold))
-                    .monospacedDigit()
-                // Hoisted: an interpolated ternary inside a ViewBuilder is what blows the
-                // type checker's time budget.
-                Text(spend.count == 1 ? "1 charge" : "\(spend.count) charges")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(spend.total)
+                        .font(.title.weight(.semibold))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                    Text("Balance")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                // The bank balance is the only figure that can be edited, so it is the only
+                // one that is a control. A row-wide tap that opened a bank editor from the
+                // spend figure would be a surprise.
+                Button {
+                    isShowingBankBalance = true
+                } label: {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(formattedBankBalance)
+                            .font(.title.weight(.semibold))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                        Text("Bank")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("Bank balance")
+                .accessibilityValue(formattedBankBalance)
+                .accessibilityHint("Change the amount in the bank")
             }
             .padding(.vertical, 4)
         } header: {

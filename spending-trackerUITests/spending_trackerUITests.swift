@@ -188,17 +188,71 @@ final class spending_trackerUITests: XCTestCase {
                        "the charge should be gone once deleted")
     }
 
+    /// Both figures in the summary row. Asserted on the labels rather than the amounts, which
+    /// depend on what happens to be in the store, and rather than the month, which is dynamic.
     @MainActor
     func testTotalSpendSectionIsShown() throws {
         let app = XCUIApplication()
         app.launch()
 
-        // The total is headed by the current month, which is dynamic — assert the row that
-        // states the charge count instead, which only the total section renders.
-        let summary = app.staticTexts.matching(
-            NSPredicate(format: "label ENDSWITH %@", " charges")
-        ).firstMatch
-        XCTAssertTrue(summary.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Balance"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Bank"].exists)
+    }
+
+    /// The bank balance is the one figure that is typed rather than derived, so the sheet has
+    /// to actually write it back. A sheet that opens and saves nothing looks identical to one
+    /// that works.
+    @MainActor
+    func testBankBalanceCanBeSet() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let bank = app.buttons["Bank balance"]
+        XCTAssertTrue(bank.waitForExistence(timeout: 10))
+        bank.tap()
+
+        XCTAssertTrue(app.navigationBars["Bank balance"].waitForExistence(timeout: 5))
+
+        // The field opens on whatever is stored, which persists across launches, so it is
+        // cleared first rather than typed over.
+        let field = app.textFields["Amount"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+
+        // Tapped at the trailing edge, not the centre. The field is trailing-aligned, and a
+        // centre tap on it drops the caret at the START of the text — which makes the deletes
+        // below no-ops and prepends the new amount, leaving "1234.560.00".
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+
+        let existing = (field.value as? String) ?? ""
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count))
+        field.typeText("1234.56")
+
+        // Pinned before saving, so a failure below says which half is wrong: the amount never
+        // reaching the field, or the sheet failing to store it.
+        XCTAssertEqual(field.value as? String, "1234.56",
+                       "the amount field should hold what was typed")
+
+        let save = app.buttons["Save"]
+        XCTAssertTrue(save.isEnabled, "a well-formed amount should enable Save")
+        save.tap()
+
+        // The sheet only closes once `save()` has got past its guard, so this is what
+        // separates "the save ran" from "the figure updated". Without it, a value that never
+        // changes is indistinguishable from a sheet that never saved.
+        XCTAssertTrue(app.navigationBars["Bank balance"].waitForNonExistence(timeout: 5),
+                      "the sheet should close when saved")
+
+        // Waited on, not read straight after the tap. The button exists the whole time behind
+        // the sheet, so `waitForExistence` returns immediately and the assertion would read
+        // the value from before the save — which is exactly how this first failed.
+        let updated = NSPredicate(format: "value == %@", "$1,234.56")
+        let finished = XCTWaiter().wait(
+            for: [XCTNSPredicateExpectation(predicate: updated, object: bank)],
+            timeout: 5
+        )
+        XCTAssertEqual(finished, .completed,
+                       "saving should update the figure behind the sheet, saw "
+                       + "\(String(describing: bank.value))")
     }
 
     @MainActor

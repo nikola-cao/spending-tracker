@@ -29,16 +29,23 @@ nonisolated enum Money {
     /// there is no correct guess available.
     private static let shape = #"^(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]{1,2})?$"#
 
-    /// `120499` → `"1204.99"`.
+    /// `120499` → `"1204.99"`, `-4050` → `"-40.50"`.
     ///
     /// Built by hand rather than with a formatter, because `FormatStyle` is locale-aware and
     /// would happily produce `"1204,99"` on a device set to a comma-decimal locale — which
     /// `minorUnits(from:)` above then correctly rejects, breaking the round trip. This is used
     /// to write the canonical amount into a journal line, so it has to be locale-independent.
+    ///
+    /// The sign is split off before the division, not left to `%`. Swift's remainder keeps the
+    /// sign of the dividend, so formatting `-4050` by parts yields `"-40.-50"` — a string that
+    /// is not merely ugly but unparseable by the function above, which would silently break the
+    /// round trip this exists to guarantee.
     static func decimalString(fromMinor minor: Int) -> String {
-        let whole = minor / 100
-        let cents = minor % 100
-        return "\(whole).\(String(format: "%02d", cents))"
+        let sign = minor < 0 ? "-" : ""
+        // `magnitude` rather than `abs`, which traps on `Int.min`. It is unsigned, so the
+        // cents are narrowed back to `Int` for `%d` rather than handed over as a `UInt`.
+        let magnitude = minor.magnitude
+        return "\(sign)\(magnitude / 100).\(String(format: "%02d", Int(magnitude % 100)))"
     }
 
     static func minorUnits(from rawAmount: String) -> Int? {
