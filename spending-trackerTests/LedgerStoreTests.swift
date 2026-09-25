@@ -679,4 +679,108 @@ struct LedgerStoreTests {
         #expect(diag.journalLines == 2)
         #expect(diag.journalBytes > 0)
     }
+
+    // MARK: - The bank balance
+    //
+    // Derived by folding the journal, never stored. The property that matters is the one the
+    // user asked for: set it, throw the store away, rebuild, and it is still there.
+
+    private func appendDeposit(_ amount: String, _ merchant: String, to url: URL) throws {
+        try appendAlert(
+            ManualEntryParser.compose(
+                kind: .deposit, merchant: merchant, amount: amount, date: nil, cardSuffix: ""),
+            to: url
+        )
+    }
+
+    @Test func aBalanceSetByHandSurvivesARebuild() throws {
+        let (ledger, _, url) = try makeStore()
+        try ledger.setBankBalance(120_000)
+        #expect(ledger.bankBalanceMinor == 120_000)
+
+        // A second store over the same journal is exactly what `resetStoreIfSchemaChanged`
+        // leaves behind: the rows are gone and the journal is all there is.
+        let rebuilt = LedgerStore(
+            container: try ModelContainer(
+                for: Schema([AlertEvent.self, Txn.self]),
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            ),
+            journalURL: url
+        )
+        rebuilt.drain()
+
+        #expect(rebuilt.bankBalanceMinor == 120_000)
+    }
+
+    @Test func aDepositMovesTheBalanceAndSurvivesARebuildToo() throws {
+        let (ledger, _, url) = try makeStore()
+        // $100.00 in the bank, then $25.00 in.
+        try ledger.setBankBalance(10_000)
+        try appendDeposit("25.00", "ZELLE FROM SAM", to: url)
+        ledger.drain()
+
+        #expect(ledger.bankBalanceMinor == 12_500)
+
+        let rebuilt = LedgerStore(
+            container: try ModelContainer(
+                for: Schema([AlertEvent.self, Txn.self]),
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            ),
+            journalURL: url
+        )
+        rebuilt.drain()
+        #expect(rebuilt.bankBalanceMinor == 12_500)
+    }
+
+    /// A balance is an assertion about the world, not a movement, so it wins outright rather
+    /// than adjusting — including over the deposits that came before it.
+    @Test func aBalanceSetAfterADepositOverridesIt() throws {
+        let (ledger, _, url) = try makeStore()
+        try appendDeposit("25.00", "ZELLE FROM SAM", to: url)
+        try ledger.setBankBalance(100_000)
+
+        #expect(ledger.bankBalanceMinor == 100_000)
+    }
+
+    /// Deleting the row removes its journal line, so the fold simply sees one fewer deposit.
+    /// No separate bookkeeping — which is the reason the balance is derived at all.
+    @Test func deletingADepositGivesTheMoneyBack() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.setBankBalance(10_000)
+        try appendDeposit("25.00", "ZELLE FROM SAM", to: url)
+        ledger.drain()
+        #expect(ledger.bankBalanceMinor == 12_500)
+
+        ledger.delete(txns(container))
+        ledger.drain()
+
+        #expect(ledger.bankBalanceMinor == 10_000)
+    }
+
+    /// An instruction line is kept forever, exactly as a charge is. Dropping an old one would
+    /// quietly restate the balance the day it aged out of the retention window.
+    @Test func anOldBalanceLineIsNeverPurged() throws {
+        let (ledger, _, url) = try makeStore()
+        // Arrived well outside the week-long window that non-charges get.
+        try appendAlert(
+            JournalInstructionParser.composeBankBalance(50_000),
+            at: Date().addingTimeInterval(-30 * 24 * 60 * 60),
+            to: url
+        )
+
+        ledger.drain()
+
+        #expect(ledger.bankBalanceMinor == 50_000)
+        #expect(JournalStore.readAll(from: url).count == 1)
+    }
+
+    /// A charge never touches the bank. The other direction of the same rule.
+    @Test func chargesLeaveTheBankAlone() throws {
+        let (ledger, _, url) = try makeStore()
+        try ledger.setBankBalance(100_000)
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+
+        #expect(ledger.bankBalanceMinor == 100_000)
+    }
 }

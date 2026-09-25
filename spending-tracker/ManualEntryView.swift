@@ -24,11 +24,6 @@ import SwiftUI
 struct ManualEntryView: View {
 
     let ledger: LedgerStore
-
-    /// Written directly rather than through the ledger: a deposit is not an alert, so there is
-    /// nothing to journal and nothing to drain.
-    @Binding var bankBalanceMinor: Int
-
     var onRecorded: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -291,18 +286,18 @@ struct ManualEntryView: View {
         outcome = .recorded(summary: "Recorded \(formatted(minor)) at \(trimmedMerchant)")
     }
 
-    /// A deposit is journalled exactly like a charge, and *then* moves the bank.
+    /// A deposit is journalled exactly like a charge, and the bank follows from that.
     ///
-    /// The order matters. The journal is what the ledger is rebuilt from, so a deposit that
-    /// failed to be written there must not have moved anything — otherwise the bank would
-    /// carry a change that no row and no line accounts for, and nothing would ever explain it.
+    /// Nothing here adjusts the balance. It is folded from the journal — the last value set,
+    /// plus every deposit after it — so writing the line *is* moving the money, and a line that
+    /// failed to be written cannot leave the bank changed with nothing to account for it.
     private func saveDeposit(_ minor: Int) {
         guard journal(kind: .deposit, minor: minor, cardSuffix: "") else { return }
 
-        bankBalanceMinor += minor
         ledger.drain()
         onRecorded()
-        outcome = .recorded(summary: depositSummary(minor))
+        outcome = .recorded(summary: "\(verb(for: minor)) \(formatted(magnitude(of: minor)))"
+                            + " — bank now \(formatted(ledger.bankBalanceMinor))")
     }
 
     /// Writes the canonical line, reporting rather than throwing so both callers stay flat.
@@ -325,13 +320,9 @@ struct ManualEntryView: View {
         return true
     }
 
-    /// States the new balance, not just what was accepted. The figure is behind the sheet, so
-    /// this is the only place the result of the deposit can actually be seen.
-    private func depositSummary(_ minor: Int) -> String {
-        let verb = minor < 0 ? "Subtracted" : "Added"
-        return "\(verb) \(formatted(minor < 0 ? -minor : minor))"
-            + " — bank now \(formatted(bankBalanceMinor))"
-    }
+    private func verb(for minor: Int) -> String { minor < 0 ? "Subtracted" : "Added" }
+
+    private func magnitude(of minor: Int) -> Int { minor < 0 ? -minor : minor }
 
     private func formatted(_ minor: Int) -> String {
         (Decimal(minor) / 100).formatted(.currency(code: "USD"))

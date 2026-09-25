@@ -54,6 +54,12 @@ final class LedgerStore {
     private let container: ModelContainer
     private let journalURL: URL
 
+    /// What is in the bank, as the journal states it. See `bankBalance(from:)`.
+    ///
+    /// Read-only to everyone else because it is *derived*: there is nothing to set. Changing
+    /// it means writing a line, which is what `setBankBalance` and a deposit both do.
+    private(set) var bankBalanceMinor = 0
+
     init(container: ModelContainer, journalURL: URL = JournalLocation.fileURL) {
         self.container = container
         self.journalURL = journalURL
@@ -77,6 +83,8 @@ final class LedgerStore {
         let records = JournalStore.readAll(from: journalURL)
         result.recordsRead = records.count
 
+        refreshBankBalance(from: records)
+
         if !records.isEmpty {
             ingest(records, into: context, result: &result)
         }
@@ -95,6 +103,92 @@ final class LedgerStore {
         // journal is the only copy of anything, so nothing may be dropped from it.
         result.journalLinesDropped = purgeExpired(records, now: Date())
         return result
+    }
+
+    // MARK: - The bank balance
+
+    /// Sets the bank balance by writing a line, so a rebuild can restore it.
+    ///
+    /// The number is an assertion about the world rather than a movement of money, which is
+    /// why it is a line of its own instead of an enormous deposit: a deposit says "this
+    /// arrived", a balance says "this is what is there", and only the second is allowed to
+    /// disagree with everything before it.
+    func setBankBalance(_ minor: Int) throws {
+        try JournalStore.append(
+            .diagnostic(
+                runID: UUID(),
+                phase: JournalRecord.capturePhase,
+                raw: JournalInstructionParser.composeBankBalance(minor),
+                note: JournalRecord.manualMarker
+            ),
+            to: journalURL
+        )
+        drain()
+    }
+
+    /// The balance the journal describes: the last value set, plus every deposit since.
+    ///
+    /// **Derived, never stored.** It used to live in `UserDefaults`, which meant it survived a
+    /// rebuild only by accident — the journal could not restore it, so a schema change would
+    /// have rebuilt the ledger and left the balance stale and unexplainable.
+    ///
+    /// Folded in journal order, which is the only order there is: the journal is append-only
+    /// and position is meaningful, so "the last balance set" and "the deposits after it" are
+    /// well defined without a single timestamp being read. Deleting a deposit's line therefore
+    /// gives the money back with no extra bookkeeping — the fold simply sees one fewer.
+    private static func bankBalance(from records: [JournalRecord]) -> Int? {
+        var balance: Int?
+
+        for record in records {
+            let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { continue }
+
+            if case .setBankBalance(let minor)? = JournalInstructionParser.parse(body) {
+                balance = minor
+                continue
+            }
+            // A deposit moves the bank; a charge never touches it.
+            for alert in AlertParsers.parseAll(body) where alert.isDeposit {
+                balance = (balance ?? 0) + alert.amountMinor
+            }
+        }
+        return balance
+    }
+
+    /// Adopts a balance set before any of this was journalled, once.
+    ///
+    /// Without it the one number the user typed themselves would be the one thing a rebuild
+    /// could not restore — exactly the bug journalling it is meant to fix. It is written to the
+    /// journal first and only cleared from `UserDefaults` afterwards, so a failed write leaves
+    /// the value where it was rather than losing it.
+    private func refreshBankBalance(from records: [JournalRecord]) {
+        if let derived = Self.bankBalance(from: records) {
+            bankBalanceMinor = derived
+            return
+        }
+
+        if let legacy = BankBalance.legacyStoredValue {
+            do {
+                try JournalStore.append(
+                    .diagnostic(
+                        runID: UUID(),
+                        phase: JournalRecord.capturePhase,
+                        raw: JournalInstructionParser.composeBankBalance(legacy),
+                        note: JournalRecord.manualMarker
+                    ),
+                    to: journalURL
+                )
+            } catch {
+                // Left in `UserDefaults` deliberately: the next drain tries again.
+                bankBalanceMinor = legacy
+                return
+            }
+            BankBalance.clearLegacyStoredValue()
+            bankBalanceMinor = legacy
+            return
+        }
+
+        bankBalanceMinor = 0
     }
 
     private func ingest(
@@ -183,11 +277,13 @@ final class LedgerStore {
 
         let kept = records.filter { record in
             let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { return record.receivedAt > cutoff }
             // A charge or a deposit is kept forever, whenever it arrived: the ledger row it
             // produced has to stay derivable from this line for the rest of the app's life.
-            if !body.isEmpty, AlertParsers.parseAll(body).contains(where: \.isLedgerEntry) {
-                return true
-            }
+            if AlertParsers.parseAll(body).contains(where: \.isLedgerEntry) { return true }
+            // An instruction too, and for the same reason — the bank balance is rebuilt by
+            // folding over these lines, so dropping one would quietly restate the balance.
+            if JournalInstructionParser.isInstruction(body) { return true }
             // Anything else — including an empty body — survives only inside the window.
             return record.receivedAt > cutoff
         }

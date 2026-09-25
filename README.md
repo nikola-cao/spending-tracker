@@ -110,6 +110,25 @@ an ordinary transaction and it also moves the bank balance immediately, which is
 figure is worth reading straight after. Deleting a deposit row gives the bank back what it
 took, since the row is the only record that the money ever moved.
 
+### The bank balance is derived, not stored
+
+It is **not** a field anywhere. Setting it writes a line to the raw journal, and the balance is
+then folded out of that file: the last value set, plus every deposit after it.
+
+```
+Bank | 1200.00
+```
+
+That is the same bargain everything else here makes, and it was not always kept. The balance
+used to live in `UserDefaults`, which meant it survived a rebuild only by accident — the journal
+could not restore it, so a schema change would have rebuilt the ledger and left the bank stale
+with nothing to explain the difference. Folding it from the journal also removes the bookkeeping
+for deletion: removing a deposit's line removes its effect, with no code that adjusts anything.
+
+A balance is an assertion about the world rather than a movement of money, which is why it is a
+line of its own and not an enormous deposit. A deposit says "this arrived"; a balance says "this
+is what is there", so it wins outright over everything before it.
+
 Both amounts are **signed**. A refund is a negative charge; a deposit goes whichever way the
 money did. `Money.minorUnits` still refuses a minus for the captured sources, where a negative
 charge is a broken parse rather than a refund — only a person typing gets one, through

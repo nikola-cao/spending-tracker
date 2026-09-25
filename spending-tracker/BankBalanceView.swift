@@ -10,22 +10,26 @@ import SwiftUI
 
 /// A one-field sheet for the only number in the app the user maintains themselves.
 ///
-/// A binding rather than a `LedgerStore` call: this value does not go through the journal, so
-/// there is no drain to run and nothing to reconcile. See `BankBalance` for why it is not in
-/// the store.
+/// It writes a journal line rather than setting a property, so the balance is restored by a
+/// rebuild exactly like everything else — see `LedgerStore.setBankBalance`.
 struct BankBalanceView: View {
 
-    @Binding var minorUnits: Int
+    let ledger: LedgerStore
+    /// Called after a successful write so the caller can pick the new value up.
+    var onSaved: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
 
-    init(minorUnits: Binding<Int>) {
-        _minorUnits = minorUnits
-        // Seeded from the stored value so the sheet opens on what is actually there, rather
+    init(ledger: LedgerStore, onSaved: @escaping () -> Void) {
+        self.ledger = ledger
+        self.onSaved = onSaved
+        // Seeded from the current value so the sheet opens on what is actually there, rather
         // than blank — the common case is nudging a number, not replacing it.
-        _text = State(initialValue: Money.decimalString(fromMinor: minorUnits.wrappedValue))
+        _text = State(initialValue: Money.decimalString(fromMinor: ledger.bankBalanceMinor))
     }
+
+    @State private var failure: String?
 
     var body: some View {
         NavigationStack {
@@ -38,8 +42,15 @@ struct BankBalanceView: View {
                 } header: {
                     Text("Bank balance")
                 } footer: {
-                    Text("What is in the bank right now. A leading minus is allowed for an "
-                         + "overdrawn account.")
+                    Text(footer)
+                }
+
+                if let failure {
+                    Section {
+                        Label(failure, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Color.red)
+                            .font(.subheadline)
+                    }
                 }
             }
             .navigationTitle("Bank balance")
@@ -60,15 +71,26 @@ struct BankBalanceView: View {
     /// display can render — the same rule the manual-entry form holds itself to.
     private var parsed: Int? { Money.signedMinorUnits(from: text) }
 
+    private var footer: String {
+        "What is in the bank right now. Saved to the raw journal, so a rebuild keeps it. "
+            + "A leading minus is allowed for an overdrawn account."
+    }
+
     private func save() {
         // Re-checked rather than trusted from the disabled state, so the body is correct on
         // its own terms.
         guard let value = parsed else { return }
-        minorUnits = value
+
+        do {
+            try ledger.setBankBalance(value)
+        } catch {
+            // The sheet stays open on a failure rather than dismissing over a write that did
+            // not happen, which would read as a balance that saved and then silently reverted.
+            failure = error.localizedDescription
+            return
+        }
+
+        onSaved()
         dismiss()
     }
-}
-
-#Preview {
-    BankBalanceView(minorUnits: .constant(124_050))
 }

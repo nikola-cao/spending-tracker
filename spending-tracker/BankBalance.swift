@@ -9,12 +9,10 @@ import Foundation
 
 /// How much the user says is in their bank account.
 ///
-/// The only hand-maintained value here, and deliberately **not** in SwiftData. Everything in
-/// the ledger is derived: a row can be thrown away and rebuilt from the raw journal, and
-/// `resetStoreIfSchemaChanged` does exactly that by deleting the store outright whenever the
-/// schema changes. A number the user typed is derivable from nothing, so storing it there
-/// would mean it survived right up until the next schema bump and then vanished with no way
-/// back. `UserDefaults` is not derived from the journal either, but it is not deleted by it.
+/// The balance itself is **not stored here any more, and not in SwiftData either** — it is
+/// derived by folding the journal, so a rebuild restores it like everything else. See
+/// `LedgerStore.bankBalance(from:)`. What is left in this type is the one-time handover from
+/// the `UserDefaults` value an earlier version kept, which the journal could not restore.
 ///
 /// Minor units, like every other amount here — an `Int` cannot drift by a cent the way a
 /// stored `Double` can. Parsing is `Money.signedMinorUnits(from:)`, because a deposit may be
@@ -23,5 +21,20 @@ enum BankBalance {
 
     /// Namespaced rather than a bare `"balance"`, which the next feature to want a balance
     /// would quietly collide with.
-    nonisolated static let defaultsKey = "bankBalanceMinor"
+    nonisolated static let legacyDefaultsKey = "bankBalanceMinor"
+
+    /// A balance set before it was journalled, if one is still sitting in `UserDefaults`.
+    ///
+    /// Read, then adopted into the journal on the next drain and cleared. Deliberately two
+    /// calls rather than a read-and-clear: clearing before the write would lose the value if
+    /// the write failed, which is the opposite of the point.
+    nonisolated static var legacyStoredValue: Int? {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: legacyDefaultsKey) != nil else { return nil }
+        return defaults.integer(forKey: legacyDefaultsKey)
+    }
+
+    nonisolated static func clearLegacyStoredValue() {
+        UserDefaults.standard.removeObject(forKey: legacyDefaultsKey)
+    }
 }

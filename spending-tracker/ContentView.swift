@@ -28,10 +28,13 @@ struct ContentView: View {
     /// The rows in the order the feed shows them. See `Txn.feedOrder`.
     private var orderedTransactions: [Txn] { Txn.feedOrder(transactions) }
 
-    /// The bank balance, kept outside the store so a schema bump cannot take it — see
-    /// `BankBalance`. `UserDefaults` rather than the journal, because this is not an alert
-    /// that arrived; it is a number the user typed.
-    @AppStorage(BankBalance.defaultsKey) private var bankBalanceMinor = 0
+    /// The bank balance, mirrored from the store.
+    ///
+    /// A `@State` copy rather than a binding, because there is nothing here to bind *to*: the
+    /// balance is derived by folding the journal, so it is read out of the store after every
+    /// drain and never written back. Anything that changes it writes a journal line and
+    /// re-drains, which is what makes a rebuild restore it.
+    @State private var bankBalanceMinor = 0
 
     @State private var isShowingJournal = false
     @State private var isShowingManualEntry = false
@@ -73,9 +76,7 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $isShowingManualEntry) {
-                ManualEntryView(ledger: ledger, bankBalanceMinor: $bankBalanceMinor) {
-                    refresh()
-                }
+                ManualEntryView(ledger: ledger) { refresh() }
             }
             .sheet(isPresented: $isShowingDiagnostics) {
                 DiagnosticsView(ledger: ledger)
@@ -84,7 +85,7 @@ struct ContentView: View {
                 NavigationStack { JournalView() }
             }
             .sheet(isPresented: $isShowingBankBalance) {
-                BankBalanceView(minorUnits: $bankBalanceMinor)
+                BankBalanceView(ledger: ledger) { refresh() }
             }
             .task { refresh() }
             // Draining on foreground is what turns the raw journal into ledger rows. It is
@@ -100,6 +101,7 @@ struct ContentView: View {
 
     private func refresh() {
         saveError = ledger.drain().saveError
+        bankBalanceMinor = ledger.bankBalanceMinor
     }
 
     /// A refused write is the one failure that would otherwise render a complete-looking
@@ -245,15 +247,12 @@ struct ContentView: View {
     /// Deleting a row has to remove its journal line too — the store is derived, and the next
     /// drain would otherwise recreate the row from the journal within seconds.
     ///
-    /// A deposit also has to give the bank back what it took. The row is the only record that
-    /// the money moved, so once it is gone nothing in the app would account for the
-    /// difference — and the bank would sit at a figure no deposit explains, which is exactly
-    /// the kind of invisible discrepancy that makes a tracker untrustworthy.
+    /// Deleting a deposit gives the bank back what it took, and there is nothing to do for
+    /// that here: the balance is folded from the journal, so removing the line removes its
+    /// effect. The refresh afterwards is what shows the new figure.
     private func deleteTransactions(at offsets: IndexSet, in rows: [Txn]) {
-        let removed = offsets.map { rows[$0] }
-        let deposits = removed.filter(\.isDeposit).reduce(0) { $0 + $1.amountMinor }
-        bankBalanceMinor -= deposits
-        ledger.delete(removed)
+        ledger.delete(offsets.map { rows[$0] })
+        refresh()
     }
 
     /// Hoisted out of the `ViewBuilder`: an interpolated ternary inside one is what blows the
