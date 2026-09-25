@@ -16,12 +16,19 @@ import Foundation
 /// pure data type that can only be constructed on the main actor is a trap waiting to happen.
 nonisolated struct ParsedAlert: Sendable, Equatable {
 
-    /// What kind of alert this is. Only charges are in scope, but an unrecognised verb is
-    /// modelled rather than coerced into `.charge`, because a format change is exactly the
-    /// failure that would otherwise corrupt the ledger silently.
+    /// What kind of alert this is. A deposit only ever comes from the manual form today, but it
+    /// is modelled here rather than special-cased downstream because it is a real thing the
+    /// ledger holds — and an unrecognised verb is modelled rather than coerced into `.charge`,
+    /// because a format change is exactly the failure that would otherwise corrupt the ledger
+    /// silently.
     enum Kind: String, Sendable {
         case charge
+        case deposit
         case unrecognizedVerb
+
+        /// Whether this kind becomes a ledger row. Both a charge and a deposit do; an
+        /// unrecognised verb does not.
+        var isLedgerEntry: Bool { self == .charge || self == .deposit }
     }
 
     let kind: Kind
@@ -63,4 +70,13 @@ nonisolated struct ParsedAlert: Sendable, Equatable {
     let parserVersion: Int
 
     var isCharge: Bool { kind == .charge }
+
+    var isDeposit: Bool { kind == .deposit }
+
+    /// Whether this alert becomes a ledger row.
+    ///
+    /// Both a charge and a deposit do. An unrecognised verb does not — it is held as an
+    /// `AlertEvent` with no row, which is what keeps `Txn` free of anything that is not a real
+    /// movement of money.
+    var isLedgerEntry: Bool { kind.isLedgerEntry }
 }

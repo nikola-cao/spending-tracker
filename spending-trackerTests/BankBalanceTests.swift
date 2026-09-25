@@ -24,7 +24,7 @@ struct BankBalanceTests {
         ("  12.34  ", 1234),
     ])
     func acceptedForms(_ testCase: (text: String, minor: Int)) {
-        #expect(BankBalance.minorUnits(from: testCase.text) == testCase.minor,
+        #expect(Money.signedMinorUnits(from: testCase.text) == testCase.minor,
                 "\(testCase.text)")
     }
 
@@ -34,7 +34,7 @@ struct BankBalanceTests {
         "", "   ", "-", "$", "-$", "--40.00", "$-40.00", "abc", "2,50", "1.2.3", "40.00-",
     ])
     func rejectedForms(_ text: String) {
-        #expect(BankBalance.minorUnits(from: text) == nil, "accepted \(text)")
+        #expect(Money.signedMinorUnits(from: text) == nil, "accepted \(text)")
     }
 
     // MARK: - Round trip
@@ -46,6 +46,6 @@ struct BankBalanceTests {
     @Test(arguments: [0, 5, 100, 1234, 120_499, -5, -100, -1234, -120_499])
     func everyAcceptedBalanceRoundTrips(_ minor: Int) {
         let text = Money.decimalString(fromMinor: minor)
-        #expect(BankBalance.minorUnits(from: text) == minor, "\(minor) via \(text)")
+        #expect(Money.signedMinorUnits(from: text) == minor, "\(minor) via \(text)")
     }
 }

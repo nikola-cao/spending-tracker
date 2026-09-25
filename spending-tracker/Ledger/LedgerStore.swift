@@ -115,19 +115,19 @@ final class LedgerStore {
             guard !body.isEmpty else { continue }
             guard seenInvocations.insert(record.runID).inserted else { continue }
 
-            // Only charges are recorded. The index is the position in the FULL parse rather
-            // than in the filtered list, so an occurrence key stays stable if a body's mix of
-            // charges and non-charges ever changes.
-            let charges = AlertParsers.parseAll(body)
+            // Only real movements of money are recorded — a charge or a deposit. The index is
+            // the position in the FULL parse rather than in the filtered list, so an
+            // occurrence key stays stable if a body's mix of entries and non-entries changes.
+            let entries = AlertParsers.parseAll(body)
                 .enumerated()
-                .filter { $0.element.isCharge }
+                .filter { $0.element.isLedgerEntry }
 
-            guard !charges.isEmpty else {
+            guard !entries.isEmpty else {
                 result.notCharges += 1
                 continue
             }
 
-            for (index, alert) in charges {
+            for (index, alert) in entries {
                 // Keyed on the INVOCATION, not the body. See `AlertEvent.occurrenceKey` for
                 // why: a body is not unique per transaction, so keying on it silently dropped
                 // every repeat charge — a monthly subscription would be recorded once, ever.
@@ -183,8 +183,9 @@ final class LedgerStore {
 
         let kept = records.filter { record in
             let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-            // A charge is kept forever, whenever it arrived.
-            if !body.isEmpty, AlertParsers.parseAll(body).contains(where: \.isCharge) {
+            // A charge or a deposit is kept forever, whenever it arrived: the ledger row it
+            // produced has to stay derivable from this line for the rest of the app's life.
+            if !body.isEmpty, AlertParsers.parseAll(body).contains(where: \.isLedgerEntry) {
                 return true
             }
             // Anything else — including an empty body — survives only inside the window.
@@ -233,17 +234,24 @@ final class LedgerStore {
         return runID
     }
 
-    /// Records a charge a person typed into the form.
+    /// Records a charge or a deposit a person typed into the form.
     ///
     /// Composed into the canonical line and journalled, so it takes the same path as a
     /// captured charge — same drain, same retention, same deletion behaviour — and can be
     /// re-read on any later launch. See `ManualEntryParser` for the format and the reason it
     /// is a text line rather than a row written straight into the store.
+    ///
+    /// A deposit is journalled for the same reason a charge is, and it is not a technicality:
+    /// the store is rebuilt from the journal whenever the schema changes, so a deposit that
+    /// was never written here would be gone at the next rebuild with nothing to restore it
+    /// from. `cardSuffix` must be empty for a deposit.
+    ///
     /// `date` and `cardSuffix` are optional: only a merchant and an amount are required. A nil
-    /// date leaves the charge with no time of its own, so the ledger falls back to the moment
-    /// the entry was made — exactly what it does for a Fidelity alert, which carries no date.
+    /// date leaves the entry with no time of its own, so the ledger falls back to the moment it
+    /// was made — exactly what it does for a Fidelity alert, which carries no date.
     @discardableResult
-    func appendManualCharge(
+    func appendManual(
+        kind: ParsedAlert.Kind,
         merchant: String,
         amount: String,
         date: Date?,
@@ -251,6 +259,7 @@ final class LedgerStore {
     ) throws -> UUID {
         try appendManualEntry(
             ManualEntryParser.compose(
+                kind: kind,
                 merchant: merchant,
                 amount: amount,
                 date: date,

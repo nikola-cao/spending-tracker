@@ -58,7 +58,7 @@ struct BankBalanceView: View {
 
     /// Rejects anything `Money` rejects, so a balance this sheet accepts is always one the
     /// display can render — the same rule the manual-entry form holds itself to.
-    private var parsed: Int? { BankBalance.minorUnits(from: text) }
+    private var parsed: Int? { Money.signedMinorUnits(from: text) }
 
     private func save() {
         // Re-checked rather than trusted from the disabled state, so the body is correct on

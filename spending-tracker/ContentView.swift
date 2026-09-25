@@ -139,11 +139,16 @@ struct ContentView: View {
     ///
     /// No charge count here. It was one line of redundancy with the list's own header, which
     /// states the same number directly above the rows it counts.
+    ///
+    /// Deposits are excluded. This figure is what the month *cost*, and a Zelle received is
+    /// not a negative cost — folding it in would make a month of heavy spending look cheap
+    /// because someone paid you back for rent. Refunds are a different thing and are not
+    /// excluded: a negative charge is money the card gave back on spending that did happen.
     private var monthSpend: (total: String, name: String) {
         let calendar = Calendar.current
         let now = Date()
         let thisMonth = transactions.filter {
-            calendar.isDate($0.occurredAt, equalTo: now, toGranularity: .month)
+            !$0.isDeposit && calendar.isDate($0.occurredAt, equalTo: now, toGranularity: .month)
         }
         let minor = thisMonth.reduce(0) { $0 + $1.amountMinor }
         return (
@@ -210,9 +215,10 @@ struct ContentView: View {
         if transactions.isEmpty {
             Section {
                 ContentUnavailableView {
-                    Label("No charges yet", systemImage: "creditcard")
+                    Label("No transactions yet", systemImage: "creditcard")
                 } description: {
-                    Text("Alerts captured by the automation will appear here.")
+                    Text("Alerts captured by the automation, and anything you add by hand, "
+                         + "will appear here.")
                 }
             }
         } else {
@@ -228,24 +234,32 @@ struct ContentView: View {
                     deleteTransactions(at: offsets, in: rows)
                 }
             } header: {
-                Text(chargesHeader)
+                Text(transactionsHeader)
             } footer: {
-                Text("Swipe a charge to delete it. Deleting also removes it from the raw "
+                Text("Swipe a transaction to delete it. Deleting also removes it from the raw "
                      + "journal, so it will not come back.")
             }
         }
     }
 
-    /// Deleting a charge has to remove its journal line too — the store is derived, and the
-    /// next drain would otherwise recreate the row from the journal within seconds.
+    /// Deleting a row has to remove its journal line too — the store is derived, and the next
+    /// drain would otherwise recreate the row from the journal within seconds.
+    ///
+    /// A deposit also has to give the bank back what it took. The row is the only record that
+    /// the money moved, so once it is gone nothing in the app would account for the
+    /// difference — and the bank would sit at a figure no deposit explains, which is exactly
+    /// the kind of invisible discrepancy that makes a tracker untrustworthy.
     private func deleteTransactions(at offsets: IndexSet, in rows: [Txn]) {
-        ledger.delete(offsets.map { rows[$0] })
+        let removed = offsets.map { rows[$0] }
+        let deposits = removed.filter(\.isDeposit).reduce(0) { $0 + $1.amountMinor }
+        bankBalanceMinor -= deposits
+        ledger.delete(removed)
     }
 
     /// Hoisted out of the `ViewBuilder`: an interpolated ternary inside one is what blows the
     /// type checker's time budget.
-    private var chargesHeader: String {
-        let noun = transactions.count == 1 ? "charge" : "charges"
+    private var transactionsHeader: String {
+        let noun = transactions.count == 1 ? "transaction" : "transactions"
         return "\(transactions.count) \(noun)"
     }
 
@@ -291,9 +305,14 @@ private struct TxnRow: View {
             label = "Alerted"
         }
         var parts: [String] = []
-        // A charge may have no card at all — a hand-entered one where the card was left blank
-        // — so the bullet is omitted rather than shown with nothing after it.
-        if !txn.cardSuffix.isEmpty { parts.append("••\(txn.cardSuffix)") }
+        // Where the money moved, if anywhere. A charge may have no card at all — a hand-entered
+        // one where the card was left blank — and a deposit never has one, so the bullet is
+        // omitted rather than shown with nothing after it.
+        if txn.isDeposit {
+            parts.append("Deposit")
+        } else if !txn.cardSuffix.isEmpty {
+            parts.append("••\(txn.cardSuffix)")
+        }
         parts.append("\(label) \(when)")
         if txn.possibleDuplicate { parts.append("possible duplicate") }
         return parts.joined(separator: " · ")

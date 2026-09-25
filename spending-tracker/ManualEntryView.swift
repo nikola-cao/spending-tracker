@@ -122,17 +122,12 @@ struct ManualEntryView: View {
             TextField("Merchant", text: $merchant)
                 .autocorrectionDisabled()
             TextField("Amount", text: $amount)
-                // A deposit may be negative, and the decimal pad has no minus key.
-                .keyboardType(kind == .charge ? .decimalPad : .numbersAndPunctuation)
-            // No date field for a deposit. The bank is a single running figure, so there is
-            // nowhere for a date to go, and a control that silently changes nothing is worse
-            // than an absent one — the same reason the row subtitle refuses to print a time
-            // the message never stated.
-            if kind == .charge {
-                Toggle("Set a purchase date", isOn: $hasDate)
-                if hasDate {
-                    DatePicker("Purchase date", selection: $date, displayedComponents: .date)
-                }
+                // Both kinds may be negative now — a refund on a charge, money leaving the
+                // bank on a deposit — and the decimal pad has no minus key.
+                .keyboardType(.numbersAndPunctuation)
+            Toggle(detailsDateLabel, isOn: $hasDate)
+            if hasDate {
+                DatePicker("Date", selection: $date, displayedComponents: .date)
             }
         } header: {
             Text(kind.title)
@@ -141,12 +136,20 @@ struct ManualEntryView: View {
         }
     }
 
+    private var detailsDateLabel: String {
+        switch kind {
+        case .charge: return "Set a purchase date"
+        case .deposit: return "Set a date"
+        }
+    }
+
     private var detailsFooter: String {
         switch kind {
         case .charge:
-            return "Only the merchant and the amount are required."
+            return "Only the merchant and the amount are required. Type a minus for a refund."
         case .deposit:
-            return "Adds to the bank balance. Type a minus to subtract it instead."
+            return "Shows up in the transactions and moves the bank balance. Type a minus to "
+                + "subtract it from the bank instead."
         }
     }
 
@@ -225,21 +228,12 @@ struct ManualEntryView: View {
         cardSuffix.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// The amount, read the way the current tab means it.
+    /// The amount, signed, the same way on both tabs.
     ///
-    /// A charge is always positive — `Money` refuses a minus outright, because a negative
-    /// charge is a broken parse, not a refund. A deposit takes one, because there a minus is
-    /// money leaving the bank. Accepting a leading `$` in both cases covers a paste.
-    private var parsedAmount: Int? {
-        switch kind {
-        case .charge:
-            var text = amount.trimmingCharacters(in: .whitespacesAndNewlines)
-            if text.hasPrefix("$") { text.removeFirst() }
-            return Money.minorUnits(from: text)
-        case .deposit:
-            return BankBalance.minorUnits(from: amount)
-        }
-    }
+    /// A minus means the same thing in both places — money coming back — so there is no reason
+    /// for the tabs to read it differently. The strict parser is still what the *captured*
+    /// sources use; only a person typing gets a minus key.
+    private var parsedAmount: Int? { Money.signedMinorUnits(from: amount) }
 
     /// Only the merchant and the amount are required. A card that *is* filled in still has to
     /// be well-formed — "123" is a mistake, not an omission.
@@ -277,8 +271,8 @@ struct ManualEntryView: View {
 
     private var amountHint: String {
         switch kind {
-        case .charge: return "Enter an amount like 12.34"
-        case .deposit: return "Enter an amount like 500 or -40.00"
+        case .charge: return "Enter an amount like 12.34, or -12.34 for a refund"
+        case .deposit: return "Enter an amount like 500, or -40 for money going out"
         }
     }
 
@@ -290,33 +284,45 @@ struct ManualEntryView: View {
             return
         }
 
+        guard journal(kind: .charge, minor: minor, cardSuffix: trimmedCard) else { return }
+
+        ledger.drain()
+        onRecorded()
+        outcome = .recorded(summary: "Recorded \(formatted(minor)) at \(trimmedMerchant)")
+    }
+
+    /// A deposit is journalled exactly like a charge, and *then* moves the bank.
+    ///
+    /// The order matters. The journal is what the ledger is rebuilt from, so a deposit that
+    /// failed to be written there must not have moved anything — otherwise the bank would
+    /// carry a change that no row and no line accounts for, and nothing would ever explain it.
+    private func saveDeposit(_ minor: Int) {
+        guard journal(kind: .deposit, minor: minor, cardSuffix: "") else { return }
+
+        bankBalanceMinor += minor
+        ledger.drain()
+        onRecorded()
+        outcome = .recorded(summary: depositSummary(minor))
+    }
+
+    /// Writes the canonical line, reporting rather than throwing so both callers stay flat.
+    private func journal(kind: ParsedAlert.Kind, minor: Int, cardSuffix: String) -> Bool {
         do {
-            try ledger.appendManualCharge(
+            try ledger.appendManual(
+                kind: kind,
                 merchant: trimmedMerchant,
                 // The canonical decimal, not what was typed: the journal line has to be
                 // re-readable regardless of how the amount was written.
                 amount: Money.decimalString(fromMinor: minor),
                 // Nil when the date was switched off — which is not the same as "today".
                 date: hasDate ? date : nil,
-                cardSuffix: trimmedCard
+                cardSuffix: cardSuffix
             )
         } catch {
             outcome = .failed(error.localizedDescription)
-            return
+            return false
         }
-
-        ledger.drain()
-        onRecorded()
-        outcome = .recorded(
-            summary: "Recorded \(formatted(minor)) at \(trimmedMerchant)"
-        )
-    }
-
-    /// Adjusts the bank balance in place. Nothing is journalled — there is nothing to derive
-    /// it from later, and the balance it changes is not derived either.
-    private func saveDeposit(_ minor: Int) {
-        bankBalanceMinor += minor
-        outcome = .recorded(summary: depositSummary(minor))
+        return true
     }
 
     /// States the new balance, not just what was accepted. The figure is behind the sheet, so

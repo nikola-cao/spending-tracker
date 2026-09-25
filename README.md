@@ -45,11 +45,17 @@ Two models, and the split is load-bearing:
 | | |
 |---|---|
 | `AlertEvent` | What **arrived**. Verbatim body, never rewritten. Every message, parsed or not. |
-| `Txn` | What we **concluded**. Parsed charges only. |
+| `Txn` | What we **concluded**. Parsed charges and deposits. |
 
-`Txn` contains *only* charges, so the feed query needs no predicate. That is structural
-rather than conventional — a forgotten predicate is exactly how an unparsed row would
-silently pollute a total, and a wrong total is invisible.
+`Txn` contains *only* real movements of money, so the feed query needs no predicate. That is
+structural rather than conventional — a forgotten predicate is exactly how an unparsed row
+would silently pollute a total, and a wrong total is invisible.
+
+Charges and deposits share the table and are told apart by `isDeposit`. The feed shows both,
+because both are things that happened. **The month total counts charges only** — a Zelle you
+received is not a negative cost, and folding it in would make a heavy month look cheap because
+someone paid you back for rent. A refund is a different thing and is *not* excluded: it is a
+negative charge, money the card gave back on spending that did happen.
 
 **Dedup keys on the invocation, not the message.** This matters more than it looks: a
 Fidelity body is a pure function of (card, amount, merchant) — no transaction id, no
@@ -94,9 +100,24 @@ edit lands and the store delete fails, the row is still on screen and can simply
 again. The reverse order fails the other way: the row vanishes, then silently reappears, which
 looks like a bug in the app rather than a failed write. There is a test for exactly that.
 
-## Adding a charge by hand
+## Adding something by hand
 
-The **+** button opens a form: merchant, amount, purchase date, and the card's last digits.
+The **+** button opens a form with two tabs, **Charge** and **Deposit**, and they share every
+field but one: a deposit has no card. Both take a merchant, an amount and an optional date.
+
+A deposit is a Venmo, a Zelle, a paycheck — money that does not come through a card. It becomes
+an ordinary transaction and it also moves the bank balance immediately, which is why the bank
+figure is worth reading straight after. Deleting a deposit row gives the bank back what it
+took, since the row is the only record that the money ever moved.
+
+Both amounts are **signed**. A refund is a negative charge; a deposit goes whichever way the
+money did. `Money.minorUnits` still refuses a minus for the captured sources, where a negative
+charge is a broken parse rather than a refund — only a person typing gets one, through
+`Money.signedMinorUnits`.
+
+### The Charge tab
+
+A charge is: merchant, amount, purchase date, and the card's last digits.
 
 **Only the merchant and the amount are required.** The date has a toggle that hides the picker
 without changing how a date is chosen when it is on; leaving it off gives the charge no time of
@@ -114,15 +135,29 @@ The form does **not** write a row straight into the store. It composes the field
 canonical line and journals it, exactly as a captured alert is journalled:
 
 ```
-Manual | <amount> | <yyyy-MM-dd> | <cardSuffix> | <merchant>
-           required    optional      optional     required
+Manual | <charge|deposit> | <amount> | <yyyy-MM-dd> | <cardSuffix> | <merchant>
+              required      required     optional       optional       required
 ```
 
 `ManualEntryParser` reads it back on the next drain. That is more work than writing the row
-directly, and it buys the whole point: a hand-entered charge is then an ordinary charge. It is
+directly, and it buys the whole point: a hand-entered entry is then an ordinary entry. It is
 restored by a rebuild, covered by the retention window, removed from the raw journal when
 deleted, and re-readable on any later launch. A row written straight into the store would do
 none of those things and would be the one kind of row with its own rules.
+
+A deposit is journalled for exactly that reason, and it is not a technicality: the store is
+rebuilt from the journal whenever the schema changes, so a deposit that was never written here
+would be gone at the next rebuild with nothing to restore it from.
+
+Lines written before the kind field existed are still read, as charges — the journal is
+append-only, and a line it already holds has to keep meaning what it meant when it was written:
+
+```
+Manual | <amount> | <yyyy-MM-dd> | <cardSuffix> | <merchant>
+```
+
+The two are told apart by the second field, because an amount is never spelled `charge` or
+`deposit`.
 
 **The merchant goes last, deliberately.** It is free text a person typed, so it may contain
 anything — including the delimiter. Putting it at the end means everything after the fourth
@@ -141,14 +176,14 @@ otherwise silent: the Shortcut keeps firing, or the alert is simply absent.
 Shows last captured, last manual entry, counts of alerts and charges, the parser version in
 force, and the journal's size. The journal can be shared out from here.
 
-## Only charges reach the ledger
+## Only real movements of money reach the ledger
 
-A body that resolves to no charge — a merchant's own confirmation email for a purchase Amex
+A body that resolves to nothing — a merchant's own confirmation email for a purchase Amex
 already reported, a statement notice, an OTP — never becomes a ledger row, and nothing in the
 app shows it to you.
 
-But it is **not discarded on arrival either**. Non-charges are held in the raw journal for a
-week and then purged; charges are kept forever.
+But it is **not discarded on arrival either**. Anything that is not a charge or a deposit is
+held in the raw journal for a week and then purged; charges and deposits are kept forever.
 
 The week is what keeps the recovery path alive. A retained body is re-parsed on every drain,
 so a charge that starts being recognised within the window is picked up with no special

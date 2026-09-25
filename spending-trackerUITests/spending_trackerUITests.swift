@@ -298,6 +298,15 @@ final class spending_trackerUITests: XCTestCase {
         app.buttons["Save"].tap()
         expectBank("$125.00", of: bank, "a deposit should add to the bank")
 
+        // The point of the whole change: a deposit is a transaction, not only an adjustment to
+        // the bank. It has to be visible in the list like anything else.
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.staticTexts["UITEST DEPOSIT"].waitForExistence(timeout: 5),
+                      "a deposit should appear in the transactions")
+
+        app.buttons["Add manually"].tap()
+        app.buttons["Deposit"].tap()
+
         // The same tab, a minus. This is the rule that separates a deposit from a charge:
         // `Money` refuses a negative charge outright, and here it has to be accepted.
         replaceText(in: app.textFields["Merchant"], with: "UITEST WITHDRAWAL")

@@ -8,12 +8,15 @@
 import Foundation
 import SwiftData
 
-/// A parsed card charge.
+/// A parsed movement of money: a card charge, or a deposit into or out of the bank.
 ///
-/// **Invariant: this table contains only charges.** An alert that did not resolve to a charge
-/// lives in `AlertEvent` with no `Txn`, so a query over `Txn` needs no predicate to exclude
-/// anything. That is deliberate — a forgotten predicate is how unparsed rows would silently
-/// pollute a total, and a wrong total is invisible.
+/// **Invariant: this table contains only real movements of money.** An alert that resolved to
+/// nothing — a decline, a merchant's own receipt for a purchase already recorded — lives in
+/// `AlertEvent` with no `Txn`. That is deliberate: a forgotten predicate is how unparsed rows
+/// would silently pollute a total, and a wrong total is invisible.
+///
+/// The two kinds are not interchangeable, so anything asking "how much was spent" has to say
+/// so — see `isDeposit`. The month total does; the feed does not, because it shows everything.
 ///
 /// Named `Txn` rather than `Transaction` because SwiftUI already has a `Transaction` type.
 @Model
@@ -26,7 +29,16 @@ final class Txn {
 
     /// Minor units — cents. Never `Decimal` and never `Double`: SwiftData stores `Decimal`
     /// as a SQLite REAL, which loses precision, and a float loses cents outright.
+    ///
+    /// **Signed.** A refund is a negative charge, and a deposit goes whichever way the money
+    /// did, so this is the amount as it was entered rather than a magnitude.
     var amountMinor: Int = 0
+
+    /// Which of the two this row is, as the raw string the journal records.
+    ///
+    /// Stored as a string rather than as the enum so the journal line and the row can never
+    /// disagree about how the value is spelled; read it through `isDeposit`.
+    var kindRaw: String = ParsedAlert.Kind.charge.rawValue
 
     /// Always "USD". No card here alerts in anything else, so there is no conversion
     /// anywhere; the field exists so a stored row is self-describing rather than relying on
@@ -81,6 +93,8 @@ final class Txn {
 
     var event: AlertEvent?
 
+    /// `kind` defaults to a charge because that is what almost every row is, and because a
+    /// test constructing a row to check ordering or a total should not have to state it.
     init(
         amountMinor: Int,
         currencyCode: String,
@@ -89,7 +103,8 @@ final class Txn {
         receivedAt: Date,
         occurredAt: Date,
         occurredAtIsFromMessage: Bool,
-        parserVersion: Int
+        parserVersion: Int,
+        kind: ParsedAlert.Kind = .charge
     ) {
         self.amountMinor = amountMinor
         self.currencyCode = currencyCode
@@ -99,6 +114,7 @@ final class Txn {
         self.occurredAt = occurredAt
         self.occurredAtIsFromMessage = occurredAtIsFromMessage
         self.parserVersion = parserVersion
+        self.kindRaw = kind.rawValue
     }
 }
 
@@ -116,9 +132,16 @@ extension Txn {
             receivedAt: receivedAt,
             occurredAt: alert.occurredAt ?? receivedAt,
             occurredAtIsFromMessage: alert.occurredAt != nil,
-            parserVersion: alert.parserVersion
+            parserVersion: alert.parserVersion,
+            kind: alert.kind
         )
     }
+
+    /// True when this row is money moving in or out of the bank rather than a card charge.
+    ///
+    /// The distinction the two kinds exist for. Anything counting *spending* has to ask — the
+    /// month total does — while the feed shows both, because both are things that happened.
+    var isDeposit: Bool { kindRaw == ParsedAlert.Kind.deposit.rawValue }
 
     /// The feed's order: by the day the charge belongs to, newest first, and within a day by
     /// the order the charges arrived in the app.

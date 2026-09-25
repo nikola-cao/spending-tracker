@@ -576,7 +576,8 @@ struct LedgerStoreTests {
 
     @Test func aManualChargeTakesTheSamePipeline() throws {
         let (ledger, container, url) = try makeStore()
-        try ledger.appendManualCharge(
+        try ledger.appendManual(
+            kind: .charge,
             merchant: "HAND TYPED", amount: "12.34", date: Date(), cardSuffix: "7224")
 
         let result = ledger.drain()
@@ -596,7 +597,8 @@ struct LedgerStoreTests {
 
     @Test func aManualChargeCanBeDeletedLikeAnyOther() throws {
         let (ledger, container, url) = try makeStore()
-        try ledger.appendManualCharge(
+        try ledger.appendManual(
+            kind: .charge,
             merchant: "HAND TYPED", amount: "12.34", date: Date(), cardSuffix: "7224")
         ledger.drain()
         #expect(txns(container).count == 1)
@@ -610,7 +612,8 @@ struct LedgerStoreTests {
 
     @Test func aManualChargeCanBeReadBackAfterARebuild() throws {
         let (ledger, container, url) = try makeStore()
-        try ledger.appendManualCharge(
+        try ledger.appendManual(
+            kind: .charge,
             merchant: "HAND TYPED", amount: "12.34", date: Date(), cardSuffix: "7224")
         ledger.drain()
         #expect(txns(container).count == 1)
@@ -630,7 +633,8 @@ struct LedgerStoreTests {
 
     @Test func aManualChargeNeedsOnlyAMerchantAndAnAmount() throws {
         let (ledger, container, _) = try makeStore()
-        try ledger.appendManualCharge(
+        try ledger.appendManual(
+            kind: .charge,
             merchant: "NO CARD NO DATE", amount: "5.00", date: nil, cardSuffix: "")
         ledger.drain()
 

@@ -69,4 +69,29 @@ nonisolated enum Money {
         guard minor <= maximumMinor else { return nil }
         return minor
     }
+
+    /// `minorUnits(from:)` plus a leading minus, for the amounts a person types.
+    ///
+    /// A separate entry point rather than a relaxation of the one above. The alert parsers read
+    /// text a card issuer sent, where a minus is a broken parse rather than a refund, and
+    /// loosening that would trade a rejected message for a wrong number. This is for the manual
+    /// form, where the minus is the point: a refund on a charge, and money leaving the bank.
+    ///
+    /// Also accepts a leading `$`, which the decimal pad cannot produce but a paste can.
+    ///
+    /// The shape is `[-][$]digits`, so `$-40` is *not* accepted. Nothing produces it, and a
+    /// parser that takes every shape someone might imagine grows rules nobody can predict.
+    static func signedMinorUnits(from text: String) -> Int? {
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var isNegative = false
+        if value.hasPrefix("-") {
+            isNegative = true
+            value.removeFirst()
+        }
+        if value.hasPrefix("$") { value.removeFirst() }
+
+        guard let magnitude = minorUnits(from: value) else { return nil }
+        return isNegative ? -magnitude : magnitude
+    }
 }

@@ -2,40 +2,60 @@
 //  ManualEntryParser.swift
 //  spending-tracker
 //
-//  A charge a person typed, in the same shape as a captured one.
+//  Something a person typed, in the same shape as a captured one.
 //
 
 import Foundation
 
-/// Reads and writes the canonical line a hand-entered charge is stored as.
+/// Reads and writes the canonical line a hand-entered charge or deposit is stored as.
 ///
 /// ## Why a text format at all
 ///
 /// The obvious alternative — write the typed fields straight into the store — would make
-/// manual charges the one kind of row that is *not* derived from the journal. They would then
+/// manual entries the one kind of row that is *not* derived from the journal. They would then
 /// behave differently from everything else: not restored by a rebuild, not covered by the
 /// retention window, not removed when deleted from the feed, and impossible to re-read. That
 /// is a lot of special cases for the sake of skipping one format.
 ///
-/// So a manual charge is composed into a line and journalled like any other alert, and this
+/// So a manual entry is composed into a line and journalled like any other alert, and this
 /// parser reads it back on the next drain. It is the same arrangement the other two sources
 /// have: a source is just a parser.
 ///
 /// ## The format
 ///
-///     Manual | <amount> | <yyyy-MM-dd> | <cardSuffix> | <merchant>
+///     Manual | <charge|deposit> | <amount> | <yyyy-MM-dd> | <cardSuffix> | <merchant>
+///
+/// The kind is a field of its own rather than a different leading token, so both kinds keep
+/// the same six slots and neither needs a reader of its own.
 ///
 /// The merchant is **last** on purpose. It is free text a person typed, so it may legitimately
 /// contain anything — including the delimiter — and putting it at the end means everything
-/// after the fourth field is the merchant, with nothing to escape or reject.
+/// after the last field is the merchant, with nothing to escape or reject.
+///
+/// ## Signed amounts, and the older shape
+///
+/// The amount is parsed by `Money.signedMinorUnits(from:)`, so it may be negative. A refund is
+/// a negative charge, and a deposit goes whichever way the money did.
+///
+/// Lines written before the kind field existed are still read, as charges:
+///
+///     Manual | <amount> | <yyyy-MM-dd> | <cardSuffix> | <merchant>
+///
+/// The two are told apart by the second field: an amount is never spelled `charge` or
+/// `deposit`. Nothing is migrated — the journal is append-only, and a line it already holds
+/// has to keep meaning what it meant when it was written.
 ///
 /// The date and the card are both **optional**: an empty field means "not given", which is
 /// different from a field that is present but wrong. A blank date leaves `occurredAt` nil and
 /// the ledger falls back to the moment the entry was made — the same fallback the Fidelity SMS
 /// uses, since that carries no date either. A blank card simply leaves the charge without one.
+///
+/// A deposit has no card at all, so a deposit line naming one is malformed rather than
+/// something to quietly drop.
 nonisolated enum ManualEntryParser {
 
-    static let version = 2
+    /// 2 → 3: the kind field was added, and amounts became signed.
+    static let version = 3
 
     /// The leading token that identifies a line as hand-entered. Chosen to read plainly in the
     /// raw journal, where a person may be looking straight at it.
@@ -57,11 +77,12 @@ nonisolated enum ManualEntryParser {
 
     // MARK: - Writing
 
-    /// Composes the line for a hand-entered charge.
+    /// Composes the line for a hand-entered charge or deposit.
     ///
     /// Always use this rather than building the string at the call site: one owner for the
     /// format means the writer and the reader cannot drift apart.
     static func compose(
+        kind: ParsedAlert.Kind,
         merchant: String,
         amount: String,
         date: Date?,
@@ -69,6 +90,7 @@ nonisolated enum ManualEntryParser {
     ) -> String {
         let fields = [
             prefix,
+            kind.rawValue,
             amount.trimmingCharacters(in: .whitespacesAndNewlines),
             date.map { dateFormatter.string(from: $0) } ?? "",
             cardSuffix.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -95,41 +117,72 @@ nonisolated enum ManualEntryParser {
     static func parseFirst(_ text: String) -> ParsedAlert? { parseAll(text).first }
 
     private static func parse(_ line: String) -> ParsedAlert? {
-        // `omittingEmptySubsequences: false` so blank optional fields still yield five parts,
-        // rather than silently shifting the card into the date slot.
-        let fields = line
-            .split(separator: "|", maxSplits: 4, omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+        // Split twice with different limits rather than once and reassembled: `maxSplits` is
+        // what keeps the merchant in one piece. Splitting on every pipe and re-joining would
+        // silently rewrite a merchant of `A | B` as `A|B`, and the merchant is free text.
+        //
+        // `omittingEmptySubsequences: false` so blank optional fields still occupy their slots,
+        // rather than shifting the card into the date position.
+        let wide = fields(of: line, maxSplits: 5)
 
-        guard fields.count == 5,
-              fields[0].lowercased() == prefix.lowercased(),
-              let amountMinor = Money.minorUnits(from: fields[1]),
-              !fields[4].isEmpty
+        // The kind is the second field when it is there. An amount is never spelled "charge" or
+        // "deposit", so a legacy line — which holds its amount in that slot — cannot be
+        // mistaken for one.
+        let hasKind = wide.count >= 6 && ParsedAlert.Kind(rawValue: wide[1]) != nil
+        let parts = hasKind ? wide : fields(of: line, maxSplits: 4)
+        // +1 for the kind field, which shifts everything after it along by one.
+        let shift = hasKind ? 1 : 0
+
+        guard parts.count == 5 + shift,
+              parts[0].lowercased() == prefix.lowercased()
         else { return nil }
+
+        // Falling back to `.charge` is not a guess: `hasKind` is only true when the field is a
+        // kind this type knows, so the lookup cannot fail here.
+        let kind = hasKind ? (ParsedAlert.Kind(rawValue: parts[1]) ?? .charge) : .charge
+        // An unrecognised verb is an alert outcome, not something a person can type.
+        guard kind.isLedgerEntry else { return nil }
+
+        // Signed: a refund is a negative charge, and a deposit goes either way.
+        guard let amountMinor = Money.signedMinorUnits(from: parts[1 + shift]) else { return nil }
+
+        guard !parts[4 + shift].isEmpty else { return nil }
 
         // A date that is ABSENT is fine; a date that is present but unreadable is not. Falling
         // back to "no date" there would quietly turn a typo into a charge dated today.
         var occurredAt: Date?
-        if !fields[2].isEmpty {
-            guard let day = dateFormatter.date(from: fields[2]) else { return nil }
+        if !parts[2 + shift].isEmpty {
+            guard let day = dateFormatter.date(from: parts[2 + shift]) else { return nil }
             // A date and no time, so noon — the same convention the Amex parser uses, and for
             // the same reason: a later timezone shift must not drag the row onto the day before.
             occurredAt = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: day)
         }
 
-        let cardSuffix = fields[3]
-        guard cardSuffix.isEmpty || isValidCardSuffix(cardSuffix) else { return nil }
+        let cardSuffix = parts[3 + shift]
+        if kind == .deposit {
+            // A deposit has no card, so a line that names one is malformed rather than
+            // something to quietly drop.
+            guard cardSuffix.isEmpty else { return nil }
+        } else {
+            guard cardSuffix.isEmpty || isValidCardSuffix(cardSuffix) else { return nil }
+        }
 
         return ParsedAlert(
-            kind: .charge,
+            kind: kind,
             amountMinor: amountMinor,
             currencyCode: "USD",
             cardSuffix: cardSuffix,
-            merchant: fields[4],
-            rawVerb: "charged",
+            merchant: parts[4 + shift],
+            rawVerb: kind == .deposit ? "deposited" : "charged",
             occurredAt: occurredAt,
             parserVersion: version
         )
+    }
+
+    private static func fields(of line: String, maxSplits: Int) -> [String] {
+        line
+            .split(separator: "|", maxSplits: maxSplits, omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
     /// At least four digits and at most five, and nothing but ASCII digits.
