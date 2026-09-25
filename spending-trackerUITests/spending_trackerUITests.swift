@@ -38,6 +38,10 @@ final class spending_trackerUITests: XCTestCase {
     /// The trailing-edge tap is load-bearing. A centre tap on a trailing-aligned field drops
     /// the caret at the START of the text, which makes the deletes no-ops and prepends the new
     /// value — that is how this first produced "1234.560.00" instead of "1234.56".
+    ///
+    /// Only for fields near the top of a form. A coordinate tap does not scroll, so on a field
+    /// low enough to sit under the keyboard it lands on the keyboard and the type fails with
+    /// "neither element nor any descendant has keyboard focus".
     @MainActor
     private func replaceText(in field: XCUIElement, with text: String) {
         field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
@@ -264,6 +268,45 @@ final class spending_trackerUITests: XCTestCase {
                       "the sheet should close when saved")
 
         expectBank("$1,234.56", of: bank, "saving should update the figure behind the sheet")
+    }
+
+    /// Editing appends a journal line rather than changing the row in place, so what this
+    /// proves is the round trip: tapping opens the form filled in, and Save lands the change
+    /// back on the row it came from.
+    @MainActor
+    func testATransactionCanBeEditedByTappingIt() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        app.buttons["Add manually"].tap()
+        replaceText(in: app.textFields["Merchant"], with: "UITEST EDITME")
+        replaceText(in: app.textFields["Amount"], with: "5.00")
+        // No card: it is optional, and the field sits low enough to be under the keyboard once
+        // the amount has been typed, where a coordinate tap lands on the keyboard instead.
+        app.buttons["Save"].tap()
+        app.buttons["Cancel"].tap()
+
+        let row = app.staticTexts["UITEST EDITME"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+
+        XCTAssertTrue(app.navigationBars["Edit charge"].waitForExistence(timeout: 5),
+                      "tapping a row should open it for editing")
+
+        // Filled in rather than blank — a form that opened empty would be a second add wearing
+        // an edit's title, and the row behind it would be untouched.
+        let amount = app.textFields["Amount"]
+        XCTAssertTrue(amount.waitForExistence(timeout: 5))
+        XCTAssertEqual(amount.value as? String, "5.00",
+                       "the form should open on the values already stored")
+
+        replaceText(in: amount, with: "9.00")
+        app.buttons["Save"].tap()
+        app.buttons["Cancel"].tap()
+
+        XCTAssertTrue(app.staticTexts["$9.00"].waitForExistence(timeout: 5),
+                      "the edited amount should be showing on the row")
+        XCTAssertTrue(app.staticTexts["UITEST EDITME"].exists, "and it should be the same row")
     }
 
     /// A deposit is the one entry that changes the bank balance rather than the ledger, so it

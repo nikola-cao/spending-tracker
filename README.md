@@ -129,6 +129,37 @@ A balance is an assertion about the world rather than a movement of money, which
 line of its own and not an enormous deposit. A deposit says "this arrived"; a balance says "this
 is what is there", so it wins outright over everything before it.
 
+### Editing a transaction
+
+Tapping a row opens the same form, filled in. Editing writes another line rather than rewriting
+the first one:
+
+```
+Edit | <runID>#<index> | <amount> | <yyyy-MM-dd> | <cardSuffix> | <merchant>
+                the line it supersedes
+```
+
+**Appended, never edited in place.** The journal is append-only, and for a captured charge the
+text is evidence — overwriting a Fidelity body because the merchant was mistyped would destroy
+the only record of what the card actually said. The original stays and this line supersedes it
+by naming it.
+
+The name is the **occurrence key** the ledger already dedupes on, which is what makes the whole
+thing rebuild-safe with no extra state: replaying the journal builds the row from the original
+line, and this line lands on top of it in the same pass. Edits are re-applied in full on every
+drain rather than tracked as done, so there is no "already applied" flag to fall out of step
+with the store after a rebuild, a deletion, or a crash between the two.
+
+**A date is set whole or cleared whole.** If the date changes, the row's time goes with it: a
+Fidelity row's `occurredAt` is its *arrival*, a real time of day, and keeping that while
+replacing the day would claim a time nobody ever stated. It becomes noon — the date-with-no-time
+convention — and the row reads "Purchased \<date\>". Clearing the date puts it back to arrival,
+exactly as omitting one does when adding.
+
+An edit cannot change what a row *is*. There is no tab switch when editing: moving a charge to a
+deposit would change whether it touches the bank, and "I mistyped the amount" is not a reason to
+reclassify it.
+
 Both amounts are **signed**. A refund is a negative charge; a deposit goes whichever way the
 money did. `Money.minorUnits` still refuses a minus for the captured sources, where a negative
 charge is a broken parse rather than a refund — only a person typing gets one, through

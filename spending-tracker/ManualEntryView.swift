@@ -24,7 +24,32 @@ import SwiftUI
 struct ManualEntryView: View {
 
     let ledger: LedgerStore
+
+    /// The row being changed, or nil when adding one. The form is the same either way — the
+    /// fields are the fields — and only what Save does with them differs.
+    var editing: Txn?
+
     var onRecorded: () -> Void
+
+    init(ledger: LedgerStore, editing: Txn? = nil, onRecorded: @escaping () -> Void) {
+        self.ledger = ledger
+        self.editing = editing
+        self.onRecorded = onRecorded
+
+        _kind = State(initialValue: editing?.isDeposit == true ? .deposit : .charge)
+        _merchant = State(initialValue: editing?.merchant ?? "")
+        // The canonical decimal, so the field shows what is actually stored rather than
+        // whatever happened to be typed when it was first entered.
+        _amount = State(
+            initialValue: editing.map { Money.decimalString(fromMinor: $0.amountMinor) } ?? "")
+
+        // Off when the row has no date of its own. A Fidelity row's `occurredAt` is its
+        // arrival, and showing that in the picker would present a time the message never
+        // stated as though it were the purchase date.
+        _hasDate = State(initialValue: editing?.occurredAtIsFromMessage ?? true)
+        _date = State(initialValue: editing?.occurredAt ?? Date())
+        _cardSuffix = State(initialValue: editing?.cardSuffix ?? "")
+    }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -47,15 +72,16 @@ struct ManualEntryView: View {
         }
     }
 
-    @State private var kind: Kind = .charge
-    @State private var merchant = ""
-    @State private var amount = ""
+    // Seeded by the initialiser, which is why none of them carries a default here.
+    @State private var kind: Kind
+    @State private var merchant: String
+    @State private var amount: String
     /// The date is optional, but the way it is *chosen* is unchanged — the toggle only decides
     /// whether the picker applies. Leaving it off gives the charge no time of its own, so the
     /// ledger falls back to when the entry was made.
-    @State private var hasDate = true
-    @State private var date = Date()
-    @State private var cardSuffix = ""
+    @State private var hasDate: Bool
+    @State private var date: Date
+    @State private var cardSuffix: String
     @State private var knownCards: [String] = []
     @State private var outcome: Outcome?
 
@@ -79,7 +105,7 @@ struct ManualEntryView: View {
                         .disabled(!canSave)
                 }
             }
-            .navigationTitle("Add manually")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -92,22 +118,34 @@ struct ManualEntryView: View {
 
     // MARK: - Sections
 
+    private var title: String {
+        guard editing != nil else { return "Add manually" }
+        return kind == .charge ? "Edit charge" : "Edit deposit"
+    }
+
+    @ViewBuilder
     private var kindSection: some View {
-        Section {
-            Picker("Kind", selection: $kind) {
-                ForEach(Kind.allCases) { option in
-                    Text(option.title).tag(option)
+        // No picker when editing. Moving a charge to the deposit tab would change what the row
+        // *is* — one touches the bank and the other does not — and "I mistyped the amount" is
+        // not a reason to reclassify it. The section header still says which one it is.
+        if editing == nil {
+            Section {
+                Picker("Kind", selection: $kind) {
+                    ForEach(Kind.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
-            // Switching clears what was typed. The fields look alike but mean different
-            // things — a merchant on one side is a source of funds on the other — and carrying
-            // a half-filled entry across the switch is how it gets saved as the wrong kind.
-            .onChange(of: kind) { _, _ in
-                merchant = ""
-                amount = ""
-                cardSuffix = ""
-                outcome = nil
+                .pickerStyle(.segmented)
+                // Switching clears what was typed. The fields look alike but mean different
+                // things — a merchant on one side is a source of funds on the other — and
+                // carrying a half-filled entry across the switch is how it gets saved as the
+                // wrong kind of thing.
+                .onChange(of: kind) { _, _ in
+                    merchant = ""
+                    amount = ""
+                    cardSuffix = ""
+                    outcome = nil
+                }
             }
         }
     }
@@ -253,15 +291,57 @@ struct ManualEntryView: View {
             return
         }
 
+        // Editing changes an existing row and never adds one, so it branches off before the
+        // two save paths rather than duplicating their field handling.
+        if let editing {
+            saveEdit(editing, minor)
+            return
+        }
+
         switch kind {
         case .charge: saveCharge(minor)
         case .deposit: saveDeposit(minor)
         }
 
+        // Only cleared when adding. An edit is about the row behind it, and blanking the form
+        // would take away the values it was just saved with.
         merchant = ""
         amount = ""
         cardSuffix = ""
         knownCards = ledger.knownCardSuffixes()
+    }
+
+    /// Appends a line that supersedes the row's original one. See `LedgerStore.edit`.
+    private func saveEdit(_ txn: Txn, _ minor: Int) {
+        // A deposit has no card, so it is never sent one — the parser refuses a deposit line
+        // that names a card, and it would refuse this too if the field were carried across.
+        let card = txn.isDeposit ? "" : trimmedCard
+
+        if !txn.isDeposit,
+           !card.isEmpty,
+           !ManualEntryParser.isValidCardSuffix(card) {
+            outcome = .failed("Card must be \(ManualEntryParser.minimumCardDigits) to "
+                              + "\(ManualEntryParser.maximumCardDigits) digits, numbers only, "
+                              + "or left blank")
+            return
+        }
+
+        do {
+            try ledger.edit(
+                txn,
+                merchant: trimmedMerchant,
+                amount: Money.decimalString(fromMinor: minor),
+                date: hasDate ? date : nil,
+                cardSuffix: card
+            )
+        } catch {
+            outcome = .failed(error.localizedDescription)
+            return
+        }
+
+        ledger.drain()
+        onRecorded()
+        outcome = .recorded(summary: "Updated \(trimmedMerchant)")
     }
 
     private var amountHint: String {

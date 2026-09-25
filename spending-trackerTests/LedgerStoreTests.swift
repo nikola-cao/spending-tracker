@@ -783,4 +783,135 @@ struct LedgerStoreTests {
 
         #expect(ledger.bankBalanceMinor == 100_000)
     }
+
+    // MARK: - Editing
+
+    private func freshContainer() throws -> ModelContainer {
+        try ModelContainer(
+            for: Schema([AlertEvent.self, Txn.self]),
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+    }
+
+    @Test func anEditChangesTheRowItNamesAndAddsNoSecondRow() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+
+        let original = try #require(txns(container).first)
+        try ledger.edit(
+            original, merchant: "BREEZE COFFEE", amount: "4.00", date: nil, cardSuffix: "7224")
+        ledger.drain()
+
+        let rows = txns(container)
+        #expect(rows.count == 1, "an edit supersedes a row; it does not add one alongside it")
+        #expect(rows.first?.merchant == "BREEZE COFFEE")
+        #expect(rows.first?.amountMinor == 400)
+    }
+
+    /// The user asked for this in as many words: the edit has to be in the journal, so
+    /// throwing the store away and replaying the file lands in the same place.
+    @Test func anEditSurvivesARebuild() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+
+        let chosen = Date(timeIntervalSince1970: 1_780_000_000)
+        try ledger.edit(
+            try #require(txns(container).first),
+            merchant: "BREEZE COFFEE", amount: "4.00", date: chosen, cardSuffix: "9999")
+        ledger.drain()
+
+        let rebuiltContainer = try freshContainer()
+        let rebuilt = LedgerStore(container: rebuiltContainer, journalURL: url)
+        rebuilt.drain()
+
+        let rows = txns(rebuiltContainer)
+        #expect(rows.count == 1)
+        let row = try #require(rows.first)
+        #expect(row.merchant == "BREEZE COFFEE")
+        #expect(row.amountMinor == 400)
+        #expect(row.cardSuffix == "9999")
+        #expect(Calendar.current.isDate(row.occurredAt, inSameDayAs: chosen))
+    }
+
+    /// The rule the user asked for: a charge that had a time loses it when the date is edited.
+    ///
+    /// A Fidelity alert carries no date, so its row's `occurredAt` is its arrival — a real time
+    /// of day, shown as "Alerted". Editing the date replaces that whole value with a date and
+    /// no time, so the row stops claiming a time of day nobody ever stated.
+    @Test func editingTheDateRemovesTheTimeTheAlertCarried() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+
+        let original = try #require(txns(container).first)
+        #expect(!original.occurredAtIsFromMessage)
+        #expect(original.occurredAt == original.receivedAt)
+
+        let chosen = Date(timeIntervalSince1970: 1_780_000_000)
+        try ledger.edit(
+            original, merchant: "BREEZE", amount: "2.50", date: chosen, cardSuffix: "7224")
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        #expect(row.occurredAtIsFromMessage, "the row now has a date of its own")
+        #expect(Calendar.current.isDate(row.occurredAt, inSameDayAs: chosen))
+        #expect(Calendar.current.component(.hour, from: row.occurredAt) == 12,
+                "noon is the date-with-no-time convention, so no clock time is claimed")
+    }
+
+    /// And clearing the date puts it back to arrival rather than leaving the old one behind.
+    @Test func clearingTheDateFallsBackToArrival() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+
+        let original = try #require(txns(container).first)
+        try ledger.edit(
+            original, merchant: "BREEZE", amount: "2.50",
+            date: Date(timeIntervalSince1970: 1_780_000_000), cardSuffix: "7224")
+        ledger.drain()
+
+        try ledger.edit(
+            try #require(txns(container).first),
+            merchant: "BREEZE", amount: "2.50", date: nil, cardSuffix: "7224")
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        #expect(!row.occurredAtIsFromMessage)
+        #expect(row.occurredAt == row.receivedAt)
+    }
+
+    /// An edit of a deposit moves the bank, because the balance is folded from the row's
+    /// current amount — not from the amount the line was first written with.
+    @Test func editingADepositChangesWhatItDidToTheBank() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.setBankBalance(10_000)
+        try appendDeposit("25.00", "ZELLE FROM SAM", to: url)
+        ledger.drain()
+        #expect(ledger.bankBalanceMinor == 12_500)
+
+        let deposit = try #require(txns(container).first { $0.isDeposit })
+        try ledger.edit(
+            deposit, merchant: "ZELLE FROM SAM", amount: "40.00", date: nil, cardSuffix: "")
+        ledger.drain()
+
+        #expect(ledger.bankBalanceMinor == 14_000)
+    }
+
+    /// The row's key comes from its event. Without one there is nothing for a later line to
+    /// point at, so the edit is refused rather than written and silently ignored.
+    @Test func aRowWithNoEventCannotBeEdited() throws {
+        let (ledger, _, _) = try makeStore()
+        let orphan = Txn(
+            amountMinor: 100, currencyCode: "USD", cardSuffix: "", merchant: "ORPHAN",
+            receivedAt: Date(), occurredAt: Date(), occurredAtIsFromMessage: false,
+            parserVersion: 1)
+
+        #expect(orphan.occurrenceKey == nil)
+        #expect(throws: LedgerStore.EditError.self) {
+            try ledger.edit(orphan, merchant: "X", amount: "1.00", date: nil, cardSuffix: "")
+        }
+    }
 }

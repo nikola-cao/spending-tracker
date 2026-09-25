@@ -42,6 +42,11 @@ struct ContentView: View {
     @State private var isShowingBankBalance = false
     @State private var saveError: String?
 
+    /// The row currently open for editing. `Txn` is `Identifiable` through its persistent id,
+    /// so `sheet(item:)` can present on it directly rather than on a separate flag plus a
+    /// lookup that could disagree about which row was tapped.
+    @State private var editingTxn: Txn?
+
     var body: some View {
         NavigationStack {
             List {
@@ -86,6 +91,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $isShowingBankBalance) {
                 BankBalanceView(ledger: ledger) { refresh() }
+            }
+            .sheet(item: $editingTxn) { txn in
+                ManualEntryView(ledger: ledger, editing: txn) { refresh() }
             }
             .task { refresh() }
             // Draining on foreground is what turns the raw journal into ledger rows. It is
@@ -231,6 +239,12 @@ struct ContentView: View {
             Section {
                 ForEach(rows) { txn in
                     TxnRow(txn: txn)
+                        // `onTapGesture` rather than a `Button`: a button merges its label into
+                        // one accessibility element, which would hide the merchant and amount
+                        // as separate texts — the swipe-to-delete test finds the row by its
+                        // merchant string, and so would anything else looking at the list.
+                        .contentShape(Rectangle())
+                        .onTapGesture { editingTxn = txn }
                 }
                 .onDelete { offsets in
                     deleteTransactions(at: offsets, in: rows)
@@ -238,8 +252,8 @@ struct ContentView: View {
             } header: {
                 Text(transactionsHeader)
             } footer: {
-                Text("Swipe a transaction to delete it. Deleting also removes it from the raw "
-                     + "journal, so it will not come back.")
+                Text("Tap a transaction to change it, or swipe it to delete it. Deleting also "
+                     + "removes it from the raw journal, so it will not come back.")
             }
         }
     }

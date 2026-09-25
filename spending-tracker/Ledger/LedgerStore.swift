@@ -83,11 +83,17 @@ final class LedgerStore {
         let records = JournalStore.readAll(from: journalURL)
         result.recordsRead = records.count
 
-        refreshBankBalance(from: records)
+        let instructions = Self.instructions(from: records)
+        refreshBankBalance(derived: instructions.bank, records: records)
 
         if !records.isEmpty {
             ingest(records, into: context, result: &result)
         }
+
+        // After the ingest, never before: an edit replaces a row that has to exist first. On a
+        // rebuild the original line is replayed into a row and this lands on top of it, in the
+        // same pass — which is what makes an edit survive a rebuild with no extra state.
+        applyEdits(instructions.edits, into: context)
 
         do {
             try context.save()
@@ -136,23 +142,97 @@ final class LedgerStore {
     /// and position is meaningful, so "the last balance set" and "the deposits after it" are
     /// well defined without a single timestamp being read. Deleting a deposit's line therefore
     /// gives the money back with no extra bookkeeping — the fold simply sees one fewer.
-    private static func bankBalance(from records: [JournalRecord]) -> Int? {
-        var balance: Int?
-
-        for record in records {
+    /// Everything the journal says beyond "here is a row", gathered in one pass.
+    ///
+    /// The balance and the edits are collected together because both need the same walk in the
+    /// same order, and the order is the whole point: an edit line means what it means because
+    /// of where it sits relative to the line it supersedes.
+    private static func instructions(
+        from records: [JournalRecord]
+    ) -> (bank: Int?, edits: [JournalInstruction.Edit]) {
+        let lines = records.compactMap { record -> (runID: UUID, body: String)? in
             let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !body.isEmpty else { continue }
+            return body.isEmpty ? nil : (record.runID, body)
+        }
 
-            if case .setBankBalance(let minor)? = JournalInstructionParser.parse(body) {
-                balance = minor
-                continue
-            }
-            // A deposit moves the bank; a charge never touches it.
-            for alert in AlertParsers.parseAll(body) where alert.isDeposit {
-                balance = (balance ?? 0) + alert.amountMinor
+        // The edits are gathered first, because one may supersede a deposit that sits *earlier*
+        // in the file and the balance below has to move by the amount that was edited to. Folding
+        // in a single pass would read the original and quietly ignore the correction.
+        var edits: [JournalInstruction.Edit] = []
+        for line in lines {
+            if case .edit(let edit)? = JournalInstructionParser.parse(line.body) {
+                edits.append(edit)
             }
         }
-        return balance
+        // Last one wins, matching `applyEdits`, which replays them in order.
+        let editedAmounts = Dictionary(
+            edits.map { ($0.occurrenceKey, $0.amountMinor) }, uniquingKeysWith: { _, last in last })
+
+        var bank: Int?
+        for line in lines {
+            switch JournalInstructionParser.parse(line.body) {
+            case .setBankBalance(let minor)?:
+                bank = minor
+            case .edit?:
+                continue
+            case nil:
+                // Not an instruction, so it is an alert — and only a deposit moves the bank.
+                // A charge never touches it.
+                for (index, alert) in AlertParsers.parseAll(line.body).enumerated()
+                where alert.isDeposit {
+                    // Keyed exactly as the ingest keys it, so an edit reaches the right line.
+                    // An edit naming a charge simply never matches anything here.
+                    let key = "\(line.runID.uuidString)#\(index)"
+                    bank = (bank ?? 0) + (editedAmounts[key] ?? alert.amountMinor)
+                }
+            }
+        }
+        return (bank, edits)
+    }
+
+    /// Replays every edit, in journal order, onto the rows they name.
+    ///
+    /// Re-applied in full on every drain rather than tracked as done, which costs one pass and
+    /// buys the property that matters: the result is a pure function of the journal. There is
+    /// no "already applied" flag to get out of step with the store after a rebuild, a deletion,
+    /// or a crash between the two.
+    private func applyEdits(_ edits: [JournalInstruction.Edit], into context: ModelContext) {
+        guard !edits.isEmpty else { return }
+
+        for edit in edits {
+            guard let txn = transaction(for: edit.occurrenceKey, in: context) else { continue }
+
+            txn.amountMinor = edit.amountMinor
+            txn.merchant = edit.merchant
+            txn.cardSuffix = edit.cardSuffix
+
+            // The date is set whole or cleared whole — never merged. A charge that had a real
+            // time loses it here: the edited value is a date with no time, so the row stops
+            // claiming a time of day nobody stated, and reads "Purchased <date>" like the Amex
+            // rows do. Clearing it falls back to arrival, exactly as an omitted date does
+            // everywhere else.
+            if let occurredAt = edit.occurredAt {
+                txn.occurredAt = occurredAt
+                txn.occurredAtIsFromMessage = true
+            } else {
+                txn.occurredAt = txn.receivedAt
+                txn.occurredAtIsFromMessage = false
+            }
+        }
+    }
+
+    /// The row an occurrence key names, or nil when nothing is stored under it.
+    private func transaction(for occurrenceKey: String, in context: ModelContext) -> Txn? {
+        let parts = occurrenceKey.split(separator: "#", maxSplits: 1)
+        guard parts.count == 2,
+              let runID = UUID(uuidString: String(parts[0])),
+              let matchIndex = Int(parts[1])
+        else { return nil }
+
+        let descriptor = FetchDescriptor<AlertEvent>(
+            predicate: #Predicate { $0.runID == runID && $0.matchIndex == matchIndex }
+        )
+        return (try? context.fetch(descriptor))?.first?.transaction
     }
 
     /// Adopts a balance set before any of this was journalled, once.
@@ -161,8 +241,8 @@ final class LedgerStore {
     /// could not restore — exactly the bug journalling it is meant to fix. It is written to the
     /// journal first and only cleared from `UserDefaults` afterwards, so a failed write leaves
     /// the value where it was rather than losing it.
-    private func refreshBankBalance(from records: [JournalRecord]) {
-        if let derived = Self.bankBalance(from: records) {
+    private func refreshBankBalance(derived: Int?, records: [JournalRecord]) {
+        if let derived {
             bankBalanceMinor = derived
             return
         }
@@ -362,6 +442,59 @@ final class LedgerStore {
                 cardSuffix: cardSuffix
             )
         )
+    }
+
+    enum EditError: LocalizedError {
+        case notAddressable
+
+        var errorDescription: String? {
+            switch self {
+            case .notAddressable:
+                "This row has no journal line to edit, so the change could not be recorded."
+            }
+        }
+    }
+
+    /// Changes a row by appending a line that supersedes the one it came from.
+    ///
+    /// Appended rather than rewritten. The journal is append-only, and for a captured charge
+    /// the text is evidence: overwriting a Fidelity body because the merchant was mistyped
+    /// would destroy the only record of what the card actually said. The original stays and
+    /// this line names it by occurrence key, so a rebuild replays both and lands in the same
+    /// place.
+    ///
+    /// The edit does not go through the parser registry. It carries no source text, only the
+    /// values the form ended up with, and reading it back through `ManualEntryParser` would
+    /// make it a second manual entry rather than a change to an existing one.
+    @discardableResult
+    func edit(
+        _ txn: Txn,
+        merchant: String,
+        amount: String,
+        date: Date?,
+        cardSuffix: String
+    ) throws -> UUID {
+        // A row with no event has no key, so nothing could ever point back at it. Refusing is
+        // the honest answer; writing an edit that addresses nothing would look like a save.
+        guard let occurrenceKey = txn.occurrenceKey else { throw EditError.notAddressable }
+
+        let runID = UUID()
+        try JournalStore.append(
+            .diagnostic(
+                runID: runID,
+                phase: JournalRecord.capturePhase,
+                raw: JournalInstructionParser.composeEdit(
+                    occurrenceKey: occurrenceKey,
+                    merchant: merchant,
+                    amount: amount,
+                    date: date,
+                    cardSuffix: cardSuffix
+                ),
+                note: JournalRecord.manualMarker
+            ),
+            to: journalURL
+        )
+        return runID
     }
 
     /// The card suffixes seen so far, for the manual-entry picker.

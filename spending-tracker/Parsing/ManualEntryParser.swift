@@ -66,15 +66,6 @@ nonisolated enum ManualEntryParser {
     static let minimumCardDigits = 4
     static let maximumCardDigits = 5
 
-    private static let dateFormat = "yyyy-MM-dd"
-
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = dateFormat
-        return formatter
-    }()
-
     // MARK: - Writing
 
     /// Composes the line for a hand-entered charge or deposit.
@@ -92,7 +83,7 @@ nonisolated enum ManualEntryParser {
             prefix,
             kind.rawValue,
             amount.trimmingCharacters(in: .whitespacesAndNewlines),
-            date.map { dateFormatter.string(from: $0) } ?? "",
+            date.map { DayFormat.string(from: $0) } ?? "",
             cardSuffix.trimmingCharacters(in: .whitespacesAndNewlines),
             merchant.trimmingCharacters(in: .whitespacesAndNewlines),
         ]
@@ -152,10 +143,8 @@ nonisolated enum ManualEntryParser {
         // back to "no date" there would quietly turn a typo into a charge dated today.
         var occurredAt: Date?
         if !parts[2 + shift].isEmpty {
-            guard let day = dateFormatter.date(from: parts[2 + shift]) else { return nil }
-            // A date and no time, so noon — the same convention the Amex parser uses, and for
-            // the same reason: a later timezone shift must not drag the row onto the day before.
-            occurredAt = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: day)
+            guard let noon = DayFormat.noon(fromDayText: parts[2 + shift]) else { return nil }
+            occurredAt = noon
         }
 
         let cardSuffix = parts[3 + shift]

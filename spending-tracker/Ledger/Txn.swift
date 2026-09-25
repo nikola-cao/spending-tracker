@@ -137,6 +137,16 @@ extension Txn {
         )
     }
 
+    /// The key this row was deduped on, and the name an edit uses to reach it — `runID#index`.
+    ///
+    /// Nil for a row whose event has gone, which an edit then simply cannot address. That is
+    /// the honest outcome rather than a guess: the key is the only thing tying a later line
+    /// back to the record it changes.
+    var occurrenceKey: String? {
+        guard let event else { return nil }
+        return "\(event.runID.uuidString)#\(event.matchIndex)"
+    }
+
     /// True when this row is money moving in or out of the bank rather than a card charge.
     ///
     /// The distinction the two kinds exist for. Anything counting *spending* has to ask — the
