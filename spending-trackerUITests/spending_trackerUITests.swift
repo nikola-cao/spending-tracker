@@ -33,6 +33,35 @@ final class spending_trackerUITests: XCTestCase {
         )
     }
 
+    /// Types `text` into a field, replacing whatever is already in it.
+    ///
+    /// The trailing-edge tap is load-bearing. A centre tap on a trailing-aligned field drops
+    /// the caret at the START of the text, which makes the deletes no-ops and prepends the new
+    /// value — that is how this first produced "1234.560.00" instead of "1234.56".
+    @MainActor
+    private func replaceText(in field: XCUIElement, with text: String) {
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        // An empty field reports its placeholder as the value; the deletes are no-ops there.
+        let existing = (field.value as? String) ?? ""
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count))
+        field.typeText(text)
+    }
+
+    /// Waits for the bank figure to read `expected`.
+    ///
+    /// Waited on rather than read straight after a tap: the button exists the whole time
+    /// behind a sheet, so an immediate read returns the value from before the change.
+    @MainActor
+    private func expectBank(_ expected: String, of bank: XCUIElement, _ message: String) {
+        let matched = NSPredicate(format: "value == %@", expected)
+        let finished = XCTWaiter().wait(
+            for: [XCTNSPredicateExpectation(predicate: matched, object: bank)],
+            timeout: 5
+        )
+        XCTAssertEqual(finished, .completed,
+                       "\(message), saw \(String(describing: bank.value))")
+    }
+
     /// A compact dump of the parts of the screen this suite reasons about, so a failed
     /// assertion reports the state instead of just the expectation.
     @MainActor
@@ -214,18 +243,10 @@ final class spending_trackerUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Bank balance"].waitForExistence(timeout: 5))
 
         // The field opens on whatever is stored, which persists across launches, so it is
-        // cleared first rather than typed over.
+        // replaced rather than typed over.
         let field = app.textFields["Amount"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
-
-        // Tapped at the trailing edge, not the centre. The field is trailing-aligned, and a
-        // centre tap on it drops the caret at the START of the text — which makes the deletes
-        // below no-ops and prepends the new amount, leaving "1234.560.00".
-        field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
-
-        let existing = (field.value as? String) ?? ""
-        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count))
-        field.typeText("1234.56")
+        replaceText(in: field, with: "1234.56")
 
         // Pinned before saving, so a failure below says which half is wrong: the amount never
         // reaching the field, or the sheet failing to store it.
@@ -236,23 +257,53 @@ final class spending_trackerUITests: XCTestCase {
         XCTAssertTrue(save.isEnabled, "a well-formed amount should enable Save")
         save.tap()
 
-        // The sheet only closes once `save()` has got past its guard, so this is what
-        // separates "the save ran" from "the figure updated". Without it, a value that never
-        // changes is indistinguishable from a sheet that never saved.
+        // The sheet only closes once `save()` has got past its guard, so this separates "the
+        // save ran" from "the figure updated". Without it, a value that never changes is
+        // indistinguishable from a sheet that never saved.
         XCTAssertTrue(app.navigationBars["Bank balance"].waitForNonExistence(timeout: 5),
                       "the sheet should close when saved")
 
-        // Waited on, not read straight after the tap. The button exists the whole time behind
-        // the sheet, so `waitForExistence` returns immediately and the assertion would read
-        // the value from before the save — which is exactly how this first failed.
-        let updated = NSPredicate(format: "value == %@", "$1,234.56")
-        let finished = XCTWaiter().wait(
-            for: [XCTNSPredicateExpectation(predicate: updated, object: bank)],
-            timeout: 5
-        )
-        XCTAssertEqual(finished, .completed,
-                       "saving should update the figure behind the sheet, saw "
-                       + "\(String(describing: bank.value))")
+        expectBank("$1,234.56", of: bank, "saving should update the figure behind the sheet")
+    }
+
+    /// A deposit is the one entry that changes the bank balance rather than the ledger, so it
+    /// has its own tab, its own sign rule, and its own arithmetic.
+    @MainActor
+    func testDepositAddsToAndSubtractsFromTheBank() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        // Pinned first, so the assertions below do not depend on whatever an earlier run left
+        // in UserDefaults.
+        let bank = app.buttons["Bank balance"]
+        XCTAssertTrue(bank.waitForExistence(timeout: 10))
+        bank.tap()
+        let bankField = app.textFields["Amount"]
+        XCTAssertTrue(bankField.waitForExistence(timeout: 5))
+        replaceText(in: bankField, with: "100.00")
+        app.buttons["Save"].tap()
+        XCTAssertTrue(app.navigationBars["Bank balance"].waitForNonExistence(timeout: 5))
+        expectBank("$100.00", of: bank, "the balance should be pinned before depositing")
+
+        app.buttons["Add manually"].tap()
+        XCTAssertTrue(app.buttons["Deposit"].waitForExistence(timeout: 5))
+        app.buttons["Deposit"].tap()
+
+        // A deposit has no card field at all.
+        XCTAssertFalse(app.textFields["Last 4 or 5 digits"].exists,
+                       "the deposit tab should not offer a card")
+
+        replaceText(in: app.textFields["Merchant"], with: "UITEST DEPOSIT")
+        replaceText(in: app.textFields["Amount"], with: "25.00")
+        app.buttons["Save"].tap()
+        expectBank("$125.00", of: bank, "a deposit should add to the bank")
+
+        // The same tab, a minus. This is the rule that separates a deposit from a charge:
+        // `Money` refuses a negative charge outright, and here it has to be accepted.
+        replaceText(in: app.textFields["Merchant"], with: "UITEST WITHDRAWAL")
+        replaceText(in: app.textFields["Amount"], with: "-40.00")
+        app.buttons["Save"].tap()
+        expectBank("$85.00", of: bank, "a negative deposit should subtract from the bank")
     }
 
     @MainActor

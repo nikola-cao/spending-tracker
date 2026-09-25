@@ -73,7 +73,9 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $isShowingManualEntry) {
-                ManualEntryView(ledger: ledger) { refresh() }
+                ManualEntryView(ledger: ledger, bankBalanceMinor: $bankBalanceMinor) {
+                    refresh()
+                }
             }
             .sheet(isPresented: $isShowingDiagnostics) {
                 DiagnosticsView(ledger: ledger)

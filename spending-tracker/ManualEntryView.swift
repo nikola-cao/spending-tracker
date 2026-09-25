@@ -2,25 +2,57 @@
 //  ManualEntryView.swift
 //  spending-tracker
 //
-//  Record a charge the automation missed.
+//  Record a charge the automation missed, or money moving in or out of the bank.
 //
 
 import Foundation
 import SwiftUI
 
-/// A form for entering a charge by hand.
+/// A form for entering something by hand: a card charge, or a deposit.
 ///
-/// The fields are composed into the canonical line `ManualEntryParser` reads, and journalled —
-/// so a hand-entered charge takes the same path as a captured one and behaves identically
-/// everywhere: it is drained the same way, covered by the same retention window, and removed
-/// from the raw journal when deleted from the feed.
+/// One form rather than two because from the user's side these are the same act — typing in a
+/// number nothing captured — and they differ only in where the number goes.
+///
+/// A **charge** is composed into the canonical line `ManualEntryParser` reads and journalled,
+/// so it takes the same path as a captured one: drained the same way, covered by the same
+/// retention window, and removed from the raw journal when deleted from the feed.
+///
+/// A **deposit** deliberately does not go through the journal at all. The journal is what the
+/// ledger is derived from and the ledger holds only charges, so a deposit line would either
+/// become a charge or be purged after a week as a non-charge. It is a change to the bank
+/// balance instead, which is stored outside all of that — see `BankBalance`.
 struct ManualEntryView: View {
 
     let ledger: LedgerStore
+
+    /// Written directly rather than through the ledger: a deposit is not an alert, so there is
+    /// nothing to journal and nothing to drain.
+    @Binding var bankBalanceMinor: Int
+
     var onRecorded: () -> Void
 
     @Environment(\.dismiss) private var dismiss
 
+    /// What this form is entering right now.
+    ///
+    /// A segmented control rather than a second sheet: the fields below are the same either
+    /// way, so the switch has to read as changing what the form *means*, not opening a
+    /// different form.
+    private enum Kind: String, CaseIterable, Identifiable {
+        case charge
+        case deposit
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .charge: return "Charge"
+            case .deposit: return "Deposit"
+            }
+        }
+    }
+
+    @State private var kind: Kind = .charge
     @State private var merchant = ""
     @State private var amount = ""
     /// The date is optional, but the way it is *chosen* is unchanged — the toggle only decides
@@ -40,8 +72,11 @@ struct ManualEntryView: View {
     var body: some View {
         NavigationStack {
             Form {
-                chargeSection
-                cardSection
+                kindSection
+                detailsSection
+                // Absent rather than shown empty: a deposit has no card, and an empty card
+                // field would invite someone to fill it in.
+                if kind == .charge { cardSection }
                 outcomeSection
 
                 Section {
@@ -62,16 +97,56 @@ struct ManualEntryView: View {
 
     // MARK: - Sections
 
-    private var chargeSection: some View {
-        Section("Charge") {
+    private var kindSection: some View {
+        Section {
+            Picker("Kind", selection: $kind) {
+                ForEach(Kind.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            // Switching clears what was typed. The fields look alike but mean different
+            // things — a merchant on one side is a source of funds on the other — and carrying
+            // a half-filled entry across the switch is how it gets saved as the wrong kind.
+            .onChange(of: kind) { _, _ in
+                merchant = ""
+                amount = ""
+                cardSuffix = ""
+                outcome = nil
+            }
+        }
+    }
+
+    private var detailsSection: some View {
+        Section {
             TextField("Merchant", text: $merchant)
                 .autocorrectionDisabled()
             TextField("Amount", text: $amount)
-                .keyboardType(.decimalPad)
-            Toggle("Set a purchase date", isOn: $hasDate)
-            if hasDate {
-                DatePicker("Purchase date", selection: $date, displayedComponents: .date)
+                // A deposit may be negative, and the decimal pad has no minus key.
+                .keyboardType(kind == .charge ? .decimalPad : .numbersAndPunctuation)
+            // No date field for a deposit. The bank is a single running figure, so there is
+            // nowhere for a date to go, and a control that silently changes nothing is worse
+            // than an absent one — the same reason the row subtitle refuses to print a time
+            // the message never stated.
+            if kind == .charge {
+                Toggle("Set a purchase date", isOn: $hasDate)
+                if hasDate {
+                    DatePicker("Purchase date", selection: $date, displayedComponents: .date)
+                }
             }
+        } header: {
+            Text(kind.title)
+        } footer: {
+            Text(detailsFooter)
+        }
+    }
+
+    private var detailsFooter: String {
+        switch kind {
+        case .charge:
+            return "Only the merchant and the amount are required."
+        case .deposit:
+            return "Adds to the bank balance. Type a minus to subtract it instead."
         }
     }
 
@@ -150,19 +225,28 @@ struct ManualEntryView: View {
         cardSuffix.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Accepts a leading `$` because it is a natural thing to type, then defers to the same
-    /// strict converter every other source uses — so an amount this form accepts cannot be one
-    /// the parser later refuses.
-    private var amountMinor: Int? {
-        var text = amount.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("$") { text.removeFirst() }
-        return Money.minorUnits(from: text)
+    /// The amount, read the way the current tab means it.
+    ///
+    /// A charge is always positive — `Money` refuses a minus outright, because a negative
+    /// charge is a broken parse, not a refund. A deposit takes one, because there a minus is
+    /// money leaving the bank. Accepting a leading `$` in both cases covers a paste.
+    private var parsedAmount: Int? {
+        switch kind {
+        case .charge:
+            var text = amount.trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.hasPrefix("$") { text.removeFirst() }
+            return Money.minorUnits(from: text)
+        case .deposit:
+            return BankBalance.minorUnits(from: amount)
+        }
     }
 
     /// Only the merchant and the amount are required. A card that *is* filled in still has to
     /// be well-formed — "123" is a mistake, not an omission.
     private var canSave: Bool {
-        guard !trimmedMerchant.isEmpty, amountMinor != nil else { return false }
+        guard !trimmedMerchant.isEmpty, parsedAmount != nil else { return false }
+        // Only a charge has a card, so only a charge can have a malformed one.
+        guard kind == .charge else { return true }
         return trimmedCard.isEmpty || ManualEntryParser.isValidCardSuffix(trimmedCard)
     }
 
@@ -171,18 +255,38 @@ struct ManualEntryView: View {
     private func save() {
         // Re-checked here rather than trusted from `canSave`, so the body of this method is
         // correct on its own terms.
-        guard let minor = amountMinor else {
-            outcome = .failed("Enter an amount like 12.34")
+        guard !trimmedMerchant.isEmpty else {
+            outcome = .failed("Enter a merchant")
             return
         }
+        guard let minor = parsedAmount else {
+            outcome = .failed(amountHint)
+            return
+        }
+
+        switch kind {
+        case .charge: saveCharge(minor)
+        case .deposit: saveDeposit(minor)
+        }
+
+        merchant = ""
+        amount = ""
+        cardSuffix = ""
+        knownCards = ledger.knownCardSuffixes()
+    }
+
+    private var amountHint: String {
+        switch kind {
+        case .charge: return "Enter an amount like 12.34"
+        case .deposit: return "Enter an amount like 500 or -40.00"
+        }
+    }
+
+    private func saveCharge(_ minor: Int) {
         guard trimmedCard.isEmpty || ManualEntryParser.isValidCardSuffix(trimmedCard) else {
             outcome = .failed("Card must be \(ManualEntryParser.minimumCardDigits) to "
                               + "\(ManualEntryParser.maximumCardDigits) digits, numbers only, "
                               + "or left blank")
-            return
-        }
-        guard !trimmedMerchant.isEmpty else {
-            outcome = .failed("Enter a merchant")
             return
         }
 
@@ -203,15 +307,27 @@ struct ManualEntryView: View {
 
         ledger.drain()
         onRecorded()
-
         outcome = .recorded(
-            summary: "Recorded \((Decimal(minor) / 100).formatted(.currency(code: "USD")))"
-                + " at \(trimmedMerchant)"
+            summary: "Recorded \(formatted(minor)) at \(trimmedMerchant)"
         )
+    }
 
-        merchant = ""
-        amount = ""
-        cardSuffix = ""
-        knownCards = ledger.knownCardSuffixes()
+    /// Adjusts the bank balance in place. Nothing is journalled — there is nothing to derive
+    /// it from later, and the balance it changes is not derived either.
+    private func saveDeposit(_ minor: Int) {
+        bankBalanceMinor += minor
+        outcome = .recorded(summary: depositSummary(minor))
+    }
+
+    /// States the new balance, not just what was accepted. The figure is behind the sheet, so
+    /// this is the only place the result of the deposit can actually be seen.
+    private func depositSummary(_ minor: Int) -> String {
+        let verb = minor < 0 ? "Subtracted" : "Added"
+        return "\(verb) \(formatted(minor < 0 ? -minor : minor))"
+            + " — bank now \(formatted(bankBalanceMinor))"
+    }
+
+    private func formatted(_ minor: Int) -> String {
+        (Decimal(minor) / 100).formatted(.currency(code: "USD"))
     }
 }
