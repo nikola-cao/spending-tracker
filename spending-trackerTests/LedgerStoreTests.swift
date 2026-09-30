@@ -774,6 +774,26 @@ struct LedgerStoreTests {
         #expect(JournalStore.readAll(from: url).count == 1)
     }
 
+    /// The feed shows one month at a time; the bank does not. A deposit from a month the list
+    /// is no longer showing is still money that moved, so the fold reads the whole journal
+    /// rather than whatever is on screen.
+    @Test func anEarlierMonthsDepositStillCountsTowardsTheBank() throws {
+        let (ledger, _, url) = try makeStore()
+        let longAgo = Date().addingTimeInterval(-90 * 24 * 60 * 60)
+
+        try ledger.setBankBalance(10_000)
+        try appendAlert(
+            ManualEntryParser.compose(
+                kind: .deposit, merchant: "OLD ZELLE", amount: "25.00", date: longAgo,
+                cardSuffix: ""),
+            at: longAgo,
+            to: url
+        )
+        ledger.drain()
+
+        #expect(ledger.bankBalanceMinor == 12_500)
+    }
+
     /// A charge never touches the bank. The other direction of the same rule.
     @Test func chargesLeaveTheBankAlone() throws {
         let (ledger, _, url) = try makeStore()

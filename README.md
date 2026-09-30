@@ -110,6 +110,32 @@ an ordinary transaction and it also moves the bank balance immediately, which is
 figure is worth reading straight after. Deleting a deposit row gives the bank back what it
 took, since the row is the only record that the money ever moved.
 
+### One month at a time
+
+The feed and the Balance figure show the **current calendar month** and nothing else. The list
+header names the month, and the total header has always.
+
+**A filter, never a deletion.** Every row stays in the store, so the month rolling over costs
+nothing and loses nothing. That is what makes a previous-months view a query rather than a
+recovery — the history is already there, all of it, and always was.
+
+The key is `occurredAt`, for the same reason the total uses it: a charge belongs to the month it
+was *made* in. A purchase on the 30th that the card only tells you about on the 3rd stays in the
+month it was spent.
+
+Nothing is scheduled. The month is computed from `Date()` on every render, so the rollover
+happens on the first render after midnight on the 1st — no timer, no background task, and
+nothing that can get out of step. (It does mean an app left open across midnight keeps showing
+the old month until something re-renders it; switching away and back is enough.)
+
+The **bank balance is untouched** by all of this. It is folded from the whole journal, not from
+the rows on screen, so a deposit from a month the list is no longer showing is still money that
+moved.
+
+The empty state distinguishes the two cases on purpose. "Nothing in October yet" with a full
+store behind it reads very differently from "No transactions yet" — and the first of the month
+is exactly when getting that wrong would look like everything had been thrown away.
+
 ### The bank balance is derived, not stored
 
 It is **not** a field anywhere. Setting it writes a line to the raw journal, and the balance is

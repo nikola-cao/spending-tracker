@@ -153,6 +153,25 @@ extension Txn {
     /// month total does — while the feed shows both, because both are things that happened.
     var isDeposit: Bool { kindRaw == ParsedAlert.Kind.deposit.rawValue }
 
+    /// Just the rows belonging to the same calendar month as `date`.
+    ///
+    /// **A filter, never a deletion.** Every row stays in the store, so the month rolling over
+    /// costs nothing and loses nothing — a previous-months view has all the history it needs,
+    /// and the bank balance is unaffected because it is folded from the journal rather than
+    /// from these rows.
+    ///
+    /// `occurredAt` is the right key for the same reason the total uses it: a charge belongs to
+    /// the month it was *made* in, not the month we heard about it. A purchase on the 31st that
+    /// arrives on the 1st stays in the month it was spent.
+    ///
+    /// Nothing is scheduled. The caller passes `date` and the result changes the moment that
+    /// date crosses a month boundary, so the rollover happens on the first render after
+    /// midnight on the 1st with no timer to get out of step.
+    static func inMonth(of date: Date, from txns: [Txn]) -> [Txn] {
+        let calendar = Calendar.current
+        return txns.filter { calendar.isDate($0.occurredAt, equalTo: date, toGranularity: .month) }
+    }
+
     /// The feed's order: by the day the charge belongs to, newest first, and within a day by
     /// the order the charges arrived in the app.
     ///

@@ -124,6 +124,63 @@ struct FeedOrderTests {
         #expect(order([olderDay, newerFirst, newerSecond]) == ["NEWER SECOND", "NEWER FIRST", "OLD DAY"])
     }
 
+    // MARK: - The month filter
+    //
+    // The list shows one month at a time. A filter, never a deletion — so the property to pin
+    // down is which rows it picks, and that nothing else goes with them.
+
+    private func inMonth(_ date: Date, _ txns: [Txn]) -> [String] {
+        Txn.inMonth(of: date, from: txns).map(\.merchant)
+    }
+
+    @Test func onlyTheMonthAskedForIsShown() {
+        let september = charge("SEPTEMBER", arrived: date(2026, 9, 30, 10, 0))
+        let october = charge("OCTOBER", arrived: date(2026, 10, 1, 9, 0))
+
+        #expect(inMonth(date(2026, 10, 15), [september, october]) == ["OCTOBER"])
+        #expect(inMonth(date(2026, 9, 15), [september, october]) == ["SEPTEMBER"])
+    }
+
+    /// The reason the filter keys on `occurredAt`: a purchase made on the 30th and heard about
+    /// on the 3rd belongs to the month it was spent in, not the month it arrived in.
+    @Test func theMonthComesFromThePurchaseDayNotTheArrival() {
+        let lateArrival = datedCharge(
+            "MADE IN SEPTEMBER", purchasedOn: date(2026, 9, 30), arrived: date(2026, 10, 3, 8, 0))
+
+        #expect(inMonth(date(2026, 10, 15), [lateArrival]).isEmpty)
+        #expect(inMonth(date(2026, 9, 15), [lateArrival]) == ["MADE IN SEPTEMBER"])
+    }
+
+    /// The boundary itself: 23:59 on the last day against 00:01 on the first.
+    @Test func theBoundaryIsTheCalendarMonth() {
+        let lastMinute = charge("LAST MINUTE", arrived: date(2026, 9, 30, 23, 59))
+        let firstMinute = charge("FIRST MINUTE", arrived: date(2026, 10, 1, 0, 1))
+
+        #expect(inMonth(date(2026, 9, 30), [lastMinute, firstMinute]) == ["LAST MINUTE"])
+        #expect(inMonth(date(2026, 10, 1), [lastMinute, firstMinute]) == ["FIRST MINUTE"])
+    }
+
+    @Test func depositsAreFilteredByMonthLikeEverythingElse() {
+        let deposit = Txn(
+            amountMinor: 25_000, currencyCode: "USD", cardSuffix: "", merchant: "ZELLE",
+            receivedAt: date(2026, 9, 20), occurredAt: date(2026, 9, 20),
+            occurredAtIsFromMessage: false, parserVersion: 1, kind: .deposit)
+
+        #expect(inMonth(date(2026, 10, 5), [deposit]).isEmpty)
+        #expect(inMonth(date(2026, 9, 5), [deposit]) == ["ZELLE"])
+    }
+
+    /// The two rules compose: the month picks the rows, the order arranges them.
+    @Test func aFilteredMonthIsStillOrderedNewestFirst() {
+        let early = charge("EARLY", arrived: date(2026, 10, 2, 9, 0))
+        let late = charge("LATE", arrived: date(2026, 10, 20, 9, 0))
+        let otherMonth = charge("SEPTEMBER", arrived: date(2026, 9, 5, 9, 0))
+
+        let rows = Txn.feedOrder(
+            Txn.inMonth(of: date(2026, 10, 15), from: [early, late, otherMonth]))
+        #expect(rows.map(\.merchant) == ["LATE", "EARLY"])
+    }
+
     // MARK: - Edges
 
     @Test func anEmptyFeedStaysEmpty() {

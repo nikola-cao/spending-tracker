@@ -25,8 +25,18 @@ struct ContentView: View {
     @Query(sort: [SortDescriptor(\Txn.receivedAt, order: .reverse)])
     private var transactions: [Txn]
 
-    /// The rows in the order the feed shows them. See `Txn.feedOrder`.
-    private var orderedTransactions: [Txn] { Txn.feedOrder(transactions) }
+    /// The rows the feed shows: this month only, in the order the feed shows them.
+    ///
+    /// Both halves recompute on every render and neither is stored, so the month rolls over on
+    /// the first render after midnight on the 1st — no timer, no scheduled task, and nothing to
+    /// get out of step. See `Txn.inMonth` and `Txn.feedOrder`.
+    private var monthTransactions: [Txn] {
+        Txn.feedOrder(Txn.inMonth(of: Date(), from: transactions))
+    }
+
+    private var monthName: String {
+        Date().formatted(.dateTime.month(.wide))
+    }
 
     /// The bank balance, mirrored from the store.
     ///
@@ -155,15 +165,12 @@ struct ContentView: View {
     /// because someone paid you back for rent. Refunds are a different thing and are not
     /// excluded: a negative charge is money the card gave back on spending that did happen.
     private var monthSpend: (total: String, name: String) {
-        let calendar = Calendar.current
-        let now = Date()
-        let thisMonth = transactions.filter {
-            !$0.isDeposit && calendar.isDate($0.occurredAt, equalTo: now, toGranularity: .month)
-        }
-        let minor = thisMonth.reduce(0) { $0 + $1.amountMinor }
+        let minor = monthTransactions
+            .filter { !$0.isDeposit }
+            .reduce(0) { $0 + $1.amountMinor }
         return (
             total: (Decimal(minor) / 100).formatted(.currency(code: "USD")),
-            name: now.formatted(.dateTime.month(.wide).year())
+            name: Date().formatted(.dateTime.month(.wide).year())
         )
     }
 
@@ -222,20 +229,19 @@ struct ContentView: View {
 
     @ViewBuilder
     private var transactionsSection: some View {
-        if transactions.isEmpty {
+        if monthTransactions.isEmpty {
             Section {
                 ContentUnavailableView {
-                    Label("No transactions yet", systemImage: "creditcard")
+                    Label(emptyTitle, systemImage: "creditcard")
                 } description: {
-                    Text("Alerts captured by the automation, and anything you add by hand, "
-                         + "will appear here.")
+                    Text(emptyMessage)
                 }
             }
         } else {
             // Bound once and used for both the rows and the offsets, so a swipe can only ever
             // resolve against the array that was actually drawn. Two evaluations of
-            // `orderedTransactions` could disagree, and then the swipe deletes the wrong row.
-            let rows = orderedTransactions
+            // `monthTransactions` could disagree, and then the swipe deletes the wrong row.
+            let rows = monthTransactions
             Section {
                 ForEach(rows) { txn in
                     TxnRow(txn: txn)
@@ -269,11 +275,30 @@ struct ContentView: View {
         refresh()
     }
 
-    /// Hoisted out of the `ViewBuilder`: an interpolated ternary inside one is what blows the
-    /// type checker's time budget.
+    /// The month is named here as well as above the total, because this list is no longer
+    /// "everything ever" — an unlabelled count with older rows in the store would read as
+    /// missing data rather than as a month.
     private var transactionsHeader: String {
-        let noun = transactions.count == 1 ? "transaction" : "transactions"
-        return "\(transactions.count) \(noun)"
+        let noun = monthTransactions.count == 1 ? "transaction" : "transactions"
+        return "\(monthName) · \(monthTransactions.count) \(noun)"
+    }
+
+    /// Kept distinct from the genuinely-empty case. An empty month with a full store behind it
+    /// saying "no transactions yet" would look like everything had been thrown away — and this
+    /// is exactly the moment the month rolls over, when it would be wrong.
+    private var emptyTitle: String {
+        transactions.isEmpty ? "No transactions yet" : "Nothing in \(monthName) yet"
+    }
+
+    private var emptyMessage: String {
+        if transactions.isEmpty {
+            return "Alerts captured by the automation, and anything you add by hand, will "
+                + "appear here."
+        }
+        // Says plainly that the history is still there, because the alternative reading is
+        // that a month rollover deleted it.
+        return "Earlier months are still kept — the list shows one month at a time, and this "
+            + "one has not started yet."
     }
 
 }
