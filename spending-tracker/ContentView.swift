@@ -320,7 +320,10 @@ private struct TxnRow: View {
             Spacer(minLength: 0)
             Text(txn.formattedAmount)
                 .font(.body.monospacedDigit())
-                .foregroundStyle(.primary)
+                // Both branches named explicitly. A bare `.primary` against a `Color` is a
+                // `HierarchicalShapeStyle` on one side and a `Color` on the other, which does
+                // not type-check — the same trap the refuted-write row hit before.
+                .foregroundStyle(txn.isMoneyIn ? Color.green : Color.primary)
         }
         .padding(.vertical, 2)
     }

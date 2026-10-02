@@ -147,6 +147,14 @@ extension Txn {
         return "\(event.runID.uuidString)#\(event.matchIndex)"
     }
 
+    /// True when this row is money **arriving** rather than money leaving.
+    ///
+    /// The sign decides, not the kind. A deposit is usually money in and a refund is money
+    /// back, so both come out true — but a deposit can be negative, and that is money leaving
+    /// the bank. Colouring it as money-in because it happens to be a deposit would say the
+    /// opposite of what it means.
+    var isMoneyIn: Bool { isDeposit ? amountMinor > 0 : amountMinor < 0 }
+
     /// True when this row is money moving in or out of the bank rather than a card charge.
     ///
     /// The distinction the two kinds exist for. Anything counting *spending* has to ask — the
