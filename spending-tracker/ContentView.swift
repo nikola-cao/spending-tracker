@@ -164,64 +164,92 @@ struct ContentView: View {
     /// not a negative cost — folding it in would make a month of heavy spending look cheap
     /// because someone paid you back for rent. Refunds are a different thing and are not
     /// excluded: a negative charge is money the card gave back on spending that did happen.
-    private var monthSpend: (total: String, name: String) {
-        let minor = monthTransactions
+    private var monthSpendMinor: Int {
+        monthTransactions
             .filter { !$0.isDeposit }
             .reduce(0) { $0 + $1.amountMinor }
-        return (
-            total: (Decimal(minor) / 100).formatted(.currency(code: "USD")),
+    }
+
+    private var monthSpend: (total: String, name: String) {
+        (
+            total: formatted(monthSpendMinor),
             name: Date().formatted(.dateTime.month(.wide).year())
         )
     }
 
-    private var formattedBankBalance: String {
-        (Decimal(bankBalanceMinor) / 100).formatted(.currency(code: "USD"))
+    private var formattedBankBalance: String { formatted(bankBalanceMinor) }
+
+    /// The bank less what this month has cost — what is left, in the plainest sense.
+    ///
+    /// It moves for both halves without either being folded into the other: a charge that
+    /// lands lowers it, and so does a deposit leaving the bank, while money coming in raises
+    /// it. That is why the two figures above stay separate and this is derived from them
+    /// rather than the three being independent numbers that could drift apart.
+    ///
+    /// Deposits reach it through the bank, not through the spend. A Zelle received is not a
+    /// negative cost, and counting it in the Balance would make a heavy month look cheap.
+    private var remaining: String { formatted(bankBalanceMinor - monthSpendMinor) }
+
+    private func formatted(_ minor: Int) -> String {
+        (Decimal(minor) / 100).formatted(.currency(code: "USD"))
     }
 
-    /// Two figures: what has been spent this month, and what is in the bank. Each is written
-    /// out as a plain `Text` rather than through a shared helper — a helper returning a
-    /// different view per branch is exactly the kind of multi-branch builder that blows the
-    /// type checker's time budget here, and there are only two of them.
+    /// Three figures across: what has been spent this month, what is in the bank, and the
+    /// difference between them.
+    ///
+    /// Three equal columns rather than spacers, because `Remaining` is a peer of the other two
+    /// and not an afterthought hanging off the right edge.
+    ///
+    /// The type is one step down from the two-figure version. Three currency strings do not fit
+    /// across an iPhone at `.title`, and shrinking all three is better than shrinking one.
     private var totalSpendSection: some View {
         let spend = monthSpend
         return Section {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(spend.total)
-                        .font(.title.weight(.semibold))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                    Text("Balance")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 12)
-                // The bank balance is the only figure that can be edited, so it is the only
-                // one that is a control. A row-wide tap that opened a bank editor from the
-                // spend figure would be a surprise.
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                summaryFigure(title: "Balance", value: spend.total, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                // The bank balance is the only figure that can be edited, so it is the only one
+                // that is a control. A row-wide tap that opened a bank editor from the spend
+                // figure would be a surprise.
                 Button {
                     isShowingBankBalance = true
                 } label: {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(formattedBankBalance)
-                            .font(.title.weight(.semibold))
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                        Text("Bank")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    summaryFigure(title: "Bank", value: formattedBankBalance, alignment: .center)
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("Bank balance")
                 .accessibilityValue(formattedBankBalance)
                 .accessibilityHint("Change the amount in the bank")
+
+                summaryFigure(title: "Remaining", value: remaining, alignment: .trailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.vertical, 4)
         } header: {
             Text(spend.name)
+        }
+    }
+
+    /// One figure and its label.
+    ///
+    /// A single return with no branches, which is why it is safe to share here: the type
+    /// checker only struggles with builders that produce a different shape per path.
+    private func summaryFigure(
+        title: String,
+        value: String,
+        alignment: HorizontalAlignment
+    ) -> some View {
+        VStack(alignment: alignment, spacing: 2) {
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

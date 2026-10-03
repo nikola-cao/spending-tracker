@@ -230,6 +230,7 @@ final class spending_trackerUITests: XCTestCase {
 
         XCTAssertTrue(app.staticTexts["Balance"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Bank"].exists)
+        XCTAssertTrue(app.staticTexts["Remaining"].exists)
     }
 
     /// The bank balance is the one figure that is typed rather than derived, so the sheet has

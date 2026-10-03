@@ -132,6 +132,19 @@ The **bank balance is untouched** by all of this. It is folded from the whole jo
 the rows on screen, so a deposit from a month the list is no longer showing is still money that
 moved.
 
+### Remaining
+
+The summary row is three figures: **Balance** (this month's charges), **Bank**, and **Remaining**
+— the bank less the spend.
+
+Remaining is derived from the other two rather than being a third number kept alongside them,
+so the three cannot drift apart. It moves for both halves: a charge lowers it, money arriving
+raises it.
+
+Deposits reach it through the bank and not through the spend, which is the same rule as
+everywhere else — a Zelle received is not a negative cost, and counting it as one would make a
+heavy month look cheap.
+
 The empty state distinguishes the two cases on purpose. "Nothing in October yet" with a full
 store behind it reads very differently from "No transactions yet" — and the first of the month
 is exactly when getting that wrong would look like everything had been thrown away.
