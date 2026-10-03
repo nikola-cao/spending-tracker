@@ -278,35 +278,60 @@ Venmo: Sarvesh Gade - Kimchi red
 
 The merchant is the person and the note they attached, and the amount is signed by direction.
 
+### What actually arrives is not the HTML
+
+The Shortcut hands over text a Mail extractor has already produced, not markup. That extractor
+**drops everything hidden**, which changes the problem in two ways at once:
+
+- The forwarded header is gone, so there is no `venmo@venmo.com` to identify the sender by.
+- The decimal point is gone, because Venmo hides it in a `display:none` span.
+
+```text
+Patrick Guo paid you
+$
+28
+00
+```
+
 ### Every one of these emails says it both ways round
 
-The visible body says what happened to the user — `Sarvesh Gade paid you` — and a hidden
-`display:none` preheader says it from the other party's side: `You paid Sarvesh Gade $28.00`.
-The preheader is there to fill the inbox preview line. In a *sent* payment it reads the other
-way round again: `Patrick guo paid you $386.70` above a visible `You paid Patrick Guo`.
+In the raw HTML the visible body says what happened to the user — `Sarvesh Gade paid you` — and
+a hidden `display:none` preheader says it from the other party's side: `You paid Sarvesh Gade
+$28.00`. In a *sent* payment it reads the other way round again: `Patrick guo paid you $386.70`
+above a visible `You paid Patrick Guo`.
 
 `HTMLText` does not drop hidden elements — its job is to recover the text in the document, and
-this text is in the document — so **both phrasings are always present**, and neither can be
-trusted. A parser keyed on `You paid` would read every payment received as money sent. That is
-a sign inversion, and it is the worst failure available here: the row still looks entirely
-plausible and the bank moves the wrong way.
+this text is in the document. So on the markup route **both phrasings are present**, and
+neither can be trusted. A parser keyed on `You paid` would read every payment received as money
+sent. That is a sign inversion, and it is the worst failure available here: the row still looks
+entirely plausible and the bank moves the wrong way.
+
+The extractor happens to remove the preheader, so the trap does not currently bite — but
+nothing may depend on that, and the tests keep the markup bodies with the preheader intact for
+exactly this reason.
 
 Direction therefore comes from the lines that appear exactly once and in only one kind of
-email: `Money credited to your Venmo account.` for money in, and the `Payment Method` field for
-money out. A body with neither is **refused** — a missing row is recoverable for a week, a
-wrong sign is a wrong number.
+email: `Money credited to your Venmo account.` for money in, and `Payment Method` together with
+`Sent from` for money out. A body with neither is **refused** — a missing row is recoverable
+for a week, a wrong sign is a wrong number.
+
+`Sent from` is required alongside `Payment Method` because that phrase on its own is one any
+order confirmation can use, and the Amex automation has already shown these filters capture
+more than they are meant to.
 
 ### The amount arrives in pieces
 
-Venmo renders the figure as four sibling elements — `$`, `28`, `.`, `00` — and every one is a
-`<div>`, so `HTMLText` puts each on its own line. The decimal point sits in a `display:none`
-span, which is the only reason the digits can be put back together at all.
+Venmo renders the figure as sibling elements — `$`, `28`, `.`, `00` — each a `<div>`, so
+`HTMLText` puts every one on its own line. On the markup route the point survives, and joining
+the pieces reproduces `$28.00`.
 
-Joining them with no separator is what makes `$` `28` `.` `00` read as `$28.00`. That same join
-would turn `$` `28` `00` — the same template with the point gone — into `$2800`, a hundredfold
-error stated with total confidence. So a run holding more than one group of digits and no point
-in it is refused rather than joined: both readings are real amounts and nothing in the text
-chooses between them.
+On the route that actually runs, the point has been dropped, leaving `$` `28` `00`. Joined
+blindly that reads as `$2800` — a hundredfold error stated with total confidence.
+
+So when there is no point, the **cents are taken to be the last element**, which is how the
+template is built, and only when it is exactly two digits with a whole-part fragment before it.
+`$` `28` `00` is `28.00`; `$` `28` `0` and `$` `28` `000` are refused, because there the shape
+does not say where the cents begin and the readings are different amounts.
 
 The run can only begin on a `$` line, and whatever is joined still has to survive the strict
 currency parser, which is what makes a permissive fragment test safe.

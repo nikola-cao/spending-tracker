@@ -37,29 +37,23 @@ nonisolated enum VenmoAlertParser {
 
     static let version = 1
 
-    /// The envelope. Venmo's own address, in the forwarded header the automation hands over.
+    /// Money arriving. Only a credited payment says this, and no other sender writes it.
     ///
-    /// Required rather than inferred, because `Payment Method` is generic enough to turn up in
-    /// an order confirmation and the Amex automation has already shown that these filters
-    /// capture more than they are meant to.
-    ///
-    /// It is one of **two** envelopes, and the second exists because of how the body gets here.
-    /// The address arrives as `&lt;venmo@venmo.com&gt;` and survives `HTMLText` — entities are
-    /// decoded after tags are stripped — but anything that looks like a tag is removed, so a
-    /// body flattened twice loses it. `creditedMarker` cannot be mangled that way and no other
-    /// sender writes it, so a received payment is still recognised without the header. A *sent*
-    /// one has only this address to identify it, which is the price of not treating the very
-    /// generic `Payment Method` as an envelope on its own.
-    private static let senderMarker = "venmo@venmo.com"
-
-    /// Money arriving. Only a credited payment says this.
+    /// The whole envelope, for money in. There is no sender address to lean on: the automation
+    /// hands over text that a Mail text extractor has already produced, and the forwarded
+    /// header — `From: Venmo <venmo@venmo.com>` — is not part of it. It is in the raw HTML, so
+    /// a body that arrives as markup still carries it and `senderMarker` accepts it, but
+    /// nothing may depend on it being there.
     private static let creditedMarker = "Money credited to your Venmo account."
 
-    /// Money leaving. Only a sent payment has a funding source to name.
-    private static let sentMarker = "Payment Method"
+    private static let senderMarker = "venmo@venmo.com"
 
-    /// Either of these means the body is a Venmo payment at all. See `senderMarker`.
-    private static let envelopeMarkers = [senderMarker, creditedMarker]
+    /// Money leaving. A sent payment names the funding source, and says the money went *from*
+    /// an account rather than to one. Both, because `Payment Method` on its own is a phrase any
+    /// order confirmation can use, and the Amex automation has already shown that these filters
+    /// capture more than they are meant to.
+    private static let sentMarker = "Payment Method"
+    private static let sentFromMarker = "Sent from"
 
     /// Where the two visible phrasings are read from. Anchored at both ends on purpose: the
     /// hidden preheader is the same sentence with the amount appended, so requiring the line to
@@ -91,12 +85,10 @@ nonisolated enum VenmoAlertParser {
     // MARK: - Reading
 
     static func parseAll(_ text: String) -> [ParsedAlert] {
-        guard envelopeMarkers.contains(where: text.contains) else { return [] }
-
         let direction: Direction
         if text.contains(creditedMarker) {
             direction = .received
-        } else if text.contains(sentMarker) {
+        } else if text.contains(sentMarker), text.contains(sentFromMarker) {
             direction = .sent
         } else {
             // A Venmo email from a template neither marker fits. Refusing costs a missing row;
@@ -178,11 +170,29 @@ nonisolated enum VenmoAlertParser {
         // template changed underneath it.
         guard fragments.first == "$" else { return nil }
         let figure = Array(fragments.dropFirst())
+        guard !figure.isEmpty else { return nil }
 
-        let digitGroups = figure.filter { $0.contains(where: \.isNumber) }
-        if digitGroups.count > 1, !figure.contains(".") { return nil }
+        // The point is usually present. It lives in a `display:none` span, which `HTMLText`
+        // keeps, so on the raw markup the digits arrive as `$` `28` `.` `00` and simply join.
+        if figure.contains(".") {
+            return Money.minorUnits(from: figure.joined())
+        }
 
-        return Money.minorUnits(from: figure.joined())
+        // It is absent on the text the automation actually hands over. That is the *same*
+        // hidden span being dropped by a Mail text extractor before the Shortcut ever sees it,
+        // and it turns the figure into `$` `28` `00` — which joined blindly reads as `$2800`.
+        //
+        // The cents are the last element and nothing else can be: the template is built as
+        // whole-then-cents, and the cents are always two digits. Requiring exactly that, with a
+        // whole-part fragment before it, is what makes `28` `00` read as `28.00` without
+        // reopening the hundredfold error the join was refused for in the first place.
+        guard let cents = figure.last, cents.count == 2, cents.allSatisfy(\.isNumber) else {
+            return nil
+        }
+        let whole = figure.dropLast()
+        guard whole.contains(where: { $0.contains(where: \.isNumber) }) else { return nil }
+
+        return Money.minorUnits(from: whole.joined() + "." + cents)
     }
 
     /// A line that is nothing but currency punctuation and digits — one piece of the figure.

@@ -119,7 +119,52 @@ struct VenmoAlertParserTests {
         @nikolacao
         """
 
-    // MARK: - The same emails as they actually arrive
+    // MARK: - What the automation actually hands over
+    //
+    // Not the raw HTML and not a flattening of it. The Shortcut passes text a Mail extractor has
+    // already produced, and that extractor drops everything hidden — so the preheader is gone,
+    // the forwarded header is gone, and *the decimal point is gone with it*, because Venmo hides
+    // it in the same `display:none` span. Taken from a real capture.
+
+    static let automationPayloadReceived = """
+        Patrick Guo paid you
+        $
+        28
+        00
+        Kimchi red
+        See transaction
+
+        Money credited to your Venmo account.
+        Transaction details
+        Date
+        Oct 02, 2026
+        Transaction ID
+        2XW49460AH593184K
+        Sent to
+        @nikolacao
+        """
+
+    static let automationPayloadSent = """
+        You paid Patrick Guo
+        $
+        386
+        70
+        Banff hotel
+        See transaction
+        Transaction details
+        Date
+        Sep 28, 2026
+        Status
+        Completed
+        Transaction ID
+        4DS54473SS230670Y
+        Payment Method
+        Venmo balance
+        Sent from
+        @nikolacao
+        """
+
+    // MARK: - The same emails as raw markup
     //
     // Raw markup, because that is what the registry is handed and it flattens before any parser
     // sees it. The fixtures above are already-flattened, which is what `VenmoAlertParser`
@@ -146,6 +191,7 @@ struct VenmoAlertParserTests {
         <p>Banff hotel</p><p>See transaction</p>
         <h3>Date</h3><p>Sep 28, 2026</p>
         <h3>Payment Method</h3><p>Venmo balance</p>
+        <h3>Sent from</h3><p>@nikolacao</p>
         """
 
     // MARK: - Direction, which is the whole point
@@ -251,20 +297,52 @@ struct VenmoAlertParserTests {
         #expect(VenmoAlertParser.parseAll("Your order shipped. Payment Method: Visa").isEmpty)
     }
 
-    /// The hundredfold error, refused. `$` `28` `00` with the decimal point gone reads as
-    /// `$2800` if joined blindly, and both readings are real amounts — so neither is chosen.
-    @Test func anAmountWithNoDecimalPointIsRefusedRatherThanJoined() {
-        let body = Self.receivedWithNote.replacingOccurrences(of: "\n.\n", with: "\n")
-        #expect(body.contains("28\n00"))
-        #expect(VenmoAlertParser.parseAll(body).isEmpty)
+    /// The shape that actually arrives, and the one the parser first refused.
+    @Test func aPayloadWithoutTheDecimalPointIsStillReadCorrectly() throws {
+        #expect(Self.automationPayloadReceived.contains("28\n00"))
+
+        let alert = try #require(VenmoAlertParser.parseFirst(Self.automationPayloadReceived))
+        #expect(alert.amountMinor == 2_800, "not 280000 — the cents are the last element")
+        #expect(alert.merchant == "Venmo: Patrick Guo - Kimchi red")
+
+        let sent = try #require(VenmoAlertParser.parseFirst(Self.automationPayloadSent))
+        #expect(sent.amountMinor == -38_670)
     }
 
-    /// A single group of digits is unambiguous, so a whole-dollar rendering still parses.
-    @Test func aWholeDollarAmountIsStillAccepted() throws {
-        let body = Self.receivedWithNote
-            .replacingOccurrences(of: "$\n28\n.\n00", with: "$\n500")
-        let alert = try #require(VenmoAlertParser.parseAll(body).first)
-        #expect(alert.amountMinor == 50_000)
+    /// The hundredfold error is still refused when the shape does not say where the cents
+    /// begin. Without a two-digit tail there is no way to tell `$28.00` from `$2800`, and the
+    /// two are different amounts, so neither is chosen.
+    @Test(arguments: [
+        "$\n28\n0",       // one digit — not a cents element
+        "$\n28\n000",     // three digits — not a cents element
+        "$\n28",          // no cents element at all
+    ])
+    func anAmbiguousAmountIsRefused(_ figure: String) {
+        let body = """
+            Patrick Guo paid you
+            \(figure)
+            Kimchi red
+            See transaction
+            Money credited to your Venmo account.
+            Transaction details
+            Date
+            Oct 02, 2026
+            """
+        #expect(VenmoAlertParser.parseAll(body).isEmpty, "accepted \(figure)")
+    }
+
+    /// A whole-dollar amount renders as `$` `50` `00` in the payload shape, which is
+    /// unambiguous, and as `$` `500` in the markup shape, which is too.
+    @Test func wholeDollarAmountsAreStillAccepted() throws {
+        let fromPayload = Self.automationPayloadReceived
+            .replacingOccurrences(of: "$\n28\n00", with: "$\n50\n00")
+        #expect(VenmoAlertParser.parseAll(fromPayload).first?.amountMinor == 5_000)
+
+        // In the markup shape the point is present — it is the payload shape that loses it —
+        // so a whole-dollar amount there is `$` `500` `.` `00`, not `$` `500`.
+        let fromMarkup = Self.receivedWithNote
+            .replacingOccurrences(of: "$\n28\n.\n00", with: "$\n500\n.\n00")
+        #expect(VenmoAlertParser.parseAll(fromMarkup).first?.amountMinor == 50_000)
     }
 
     @Test func theOtherSourcesAreNotClaimed() {
@@ -299,16 +377,13 @@ struct VenmoAlertParserTests {
         #expect(sent.merchant == "Venmo: Patrick Guo - Banff hotel")
     }
 
-    /// A body flattened twice loses the header address, because the second pass reads
-    /// `< venmo@venmo.com >` as a tag. A received payment still gets through on the credited
-    /// line; a sent one has nothing left to identify it by, so it is refused. Worth pinning
-    /// down: it is the difference between the real pipeline and a re-flattened body.
-    @Test func aSentBodyLosesItsOnlyEnvelopeWhenFlattenedTwice() {
-        let once = HTMLText.extract(from: Self.sentMarkup)
-        #expect(VenmoAlertParser.parseFirst(once) != nil)
+    /// Neither real payload carries Venmo's address — the Mail extractor strips the forwarded
+    /// header along with everything else that is not visible. Nothing may depend on it.
+    @Test func neitherPayloadCarriesTheSenderAddress() throws {
+        #expect(!Self.automationPayloadReceived.contains("venmo@venmo.com"))
+        #expect(!Self.automationPayloadSent.contains("venmo@venmo.com"))
 
-        let twice = HTMLText.extract(from: once)
-        #expect(!twice.contains("venmo@venmo.com"))
-        #expect(VenmoAlertParser.parseFirst(twice) == nil)
+        #expect(VenmoAlertParser.parseFirst(Self.automationPayloadReceived) != nil)
+        #expect(VenmoAlertParser.parseFirst(Self.automationPayloadSent) != nil)
     }
 }

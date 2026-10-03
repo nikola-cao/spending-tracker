@@ -803,13 +803,12 @@ struct LedgerStoreTests {
         let (ledger, container, url) = try makeStore()
         try ledger.setBankBalance(10_000)
 
-        // Raw markup, as the automation hands it over — the registry flattens before parsing,
-        // and a pre-flattened body would be flattened a second time and lose its envelope.
-        try appendAlert(VenmoAlertParserTests.receivedMarkup, to: url)
+        // The plain-text payload the automation actually hands over, not the raw markup.
+        try appendAlert(VenmoAlertParserTests.automationPayloadReceived, to: url)
         ledger.drain()
         #expect(ledger.bankBalanceMinor == 12_800, "$28.00 in")
 
-        try appendAlert(VenmoAlertParserTests.sentMarkup, to: url)
+        try appendAlert(VenmoAlertParserTests.automationPayloadSent, to: url)
         ledger.drain()
         #expect(ledger.bankBalanceMinor == 12_800 - 38_670, "$386.70 out")
 
@@ -820,7 +819,7 @@ struct LedgerStoreTests {
         let allDeposits = rows.allSatisfy(\.isDeposit)
         #expect(allDeposits, "both directions are deposits, not charges")
         #expect(Set(rows.map(\.merchant))
-                == ["Venmo: Sarvesh Gade - Kimchi red", "Venmo: Patrick Guo - Banff hotel"])
+                == ["Venmo: Patrick Guo - Kimchi red", "Venmo: Patrick Guo - Banff hotel"])
     }
 
     /// A charge never touches the bank. The other direction of the same rule.
