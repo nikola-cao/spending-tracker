@@ -265,6 +265,52 @@ otherwise silent: the Shortcut keeps firing, or the alert is simply absent.
 Shows last captured, last manual entry, counts of alerts and charges, the parser version in
 force, and the journal's size. The journal can be shared out from here.
 
+## Venmo
+
+> **A third source (2026-10-02).** Venmo payment emails, forwarded by their own automation.
+
+Venmo payments are **deposits**, not charges: positive when money arrived, negative when it
+left. So they appear in the feed like anything else and they move the bank balance.
+
+```
+Venmo: Sarvesh Gade - Kimchi red
+```
+
+The merchant is the person and the note they attached, and the amount is signed by direction.
+
+### Every one of these emails says it both ways round
+
+The visible body says what happened to the user — `Sarvesh Gade paid you` — and a hidden
+`display:none` preheader says it from the other party's side: `You paid Sarvesh Gade $28.00`.
+The preheader is there to fill the inbox preview line. In a *sent* payment it reads the other
+way round again: `Patrick guo paid you $386.70` above a visible `You paid Patrick Guo`.
+
+`HTMLText` does not drop hidden elements — its job is to recover the text in the document, and
+this text is in the document — so **both phrasings are always present**, and neither can be
+trusted. A parser keyed on `You paid` would read every payment received as money sent. That is
+a sign inversion, and it is the worst failure available here: the row still looks entirely
+plausible and the bank moves the wrong way.
+
+Direction therefore comes from the lines that appear exactly once and in only one kind of
+email: `Money credited to your Venmo account.` for money in, and the `Payment Method` field for
+money out. A body with neither is **refused** — a missing row is recoverable for a week, a
+wrong sign is a wrong number.
+
+### The amount arrives in pieces
+
+Venmo renders the figure as four sibling elements — `$`, `28`, `.`, `00` — and every one is a
+`<div>`, so `HTMLText` puts each on its own line. The decimal point sits in a `display:none`
+span, which is the only reason the digits can be put back together at all.
+
+Joining them with no separator is what makes `$` `28` `.` `00` read as `$28.00`. That same join
+would turn `$` `28` `00` — the same template with the point gone — into `$2800`, a hundredfold
+error stated with total confidence. So a run holding more than one group of digits and no point
+in it is refused rather than joined: both readings are real amounts and nothing in the text
+chooses between them.
+
+The run can only begin on a `$` line, and whatever is joined still has to survive the strict
+currency parser, which is what makes a permissive fragment test safe.
+
 ## Only real movements of money reach the ledger
 
 A body that resolves to nothing — a merchant's own confirmation email for a purchase Amex

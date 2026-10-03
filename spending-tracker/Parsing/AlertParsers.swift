@@ -22,8 +22,9 @@ nonisolated enum AlertParsers {
     /// Reflects every parser's version, so it moves whenever any of them changes. Each
     /// occupies one decimal digit — keep them under ten.
     static var version: Int {
-        FidelityAlertParser.version * 100
-            + AmexAlertParser.version * 10
+        FidelityAlertParser.version * 1000
+            + AmexAlertParser.version * 100
+            + VenmoAlertParser.version * 10
             + ManualEntryParser.version
     }
 
@@ -33,9 +34,9 @@ nonisolated enum AlertParsers {
     /// and the Shortcut that captures them hands over markup rather than prose; SMS bodies
     /// have no tags and pass through unchanged, so the same call is correct for both.
     ///
-    /// The three sources have disjoint anchors — `Fidelity® Credit Card:`, `There was a large
-    /// purchase on your Card`, and the `Manual |` line a typed charge is stored as — so a body
-    /// can only be claimed by the source it actually came from.
+    /// The sources have disjoint anchors — `Fidelity® Credit Card:`, `There was a large
+    /// purchase on your Card`, `venmo@venmo.com`, and the `Manual |` line a typed entry is
+    /// stored as — so a body can only be claimed by the source it actually came from.
     static func parseAll(_ raw: String) -> [ParsedAlert] {
         let text = HTMLText.extract(from: raw)
 
@@ -44,6 +45,9 @@ nonisolated enum AlertParsers {
 
         let amex = AmexAlertParser.parseAll(text)
         if !amex.isEmpty { return amex }
+
+        let venmo = VenmoAlertParser.parseAll(text)
+        if !venmo.isEmpty { return venmo }
 
         return ManualEntryParser.parseAll(text)
     }
