@@ -148,12 +148,16 @@ nonisolated enum ManualEntryParser {
         }
 
         let cardSuffix = parts[3 + shift]
-        if kind == .charge {
-            guard cardSuffix.isEmpty || isValidCardSuffix(cardSuffix) else { return nil }
-        } else {
-            // A deposit and a payment both have no card, so a line naming one is malformed
-            // rather than something to quietly drop.
+        if kind == .deposit {
+            // A deposit has no card, so a line naming one is malformed rather than something to
+            // quietly drop. Money that arrived by Venmo or by hand did not come off a card.
             guard cardSuffix.isEmpty else { return nil }
+        } else {
+            // A charge and a payment both may name one. The Payment tab offers no card field,
+            // so a hand-typed payment writes none — but a payment read from an Amex email knows
+            // which card it settled, and refusing the card here would throw that away the first
+            // time the row was edited.
+            guard cardSuffix.isEmpty || isValidCardSuffix(cardSuffix) else { return nil }
         }
 
         return ParsedAlert(

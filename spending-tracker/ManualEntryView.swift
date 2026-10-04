@@ -346,9 +346,10 @@ struct ManualEntryView: View {
 
     /// Appends a line that supersedes the row's original one. See `LedgerStore.edit`.
     private func saveEdit(_ txn: Txn, _ minor: Int) {
-        // Only a charge has a card, so the other kinds are never sent one — the parser refuses
-        // a line that names a card on either of them.
-        let card = txn.isDeposit || txn.isPayment ? "" : trimmedCard
+        // A deposit never has a card. A payment keeps whatever it already had: the form offers
+        // no card field for one, but an Amex payment arrives knowing which card it settled, and
+        // writing "" here would quietly erase that the first time the row was edited.
+        let card = txn.isDeposit ? "" : (txn.isPayment ? txn.cardSuffix : trimmedCard)
 
         if !txn.isDeposit, !txn.isPayment,
            !card.isEmpty,

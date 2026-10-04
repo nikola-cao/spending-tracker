@@ -268,11 +268,22 @@ struct ManualEntryParserTests {
         #expect(alert.cardSuffix.isEmpty)
     }
 
-    /// A payment has no card, the same as a deposit — so a line naming one is malformed rather
-    /// than something to quietly drop.
-    @Test func aPaymentLineNamingACardIsRejected() {
+    /// A payment *may* name a card, unlike a deposit. The Payment tab offers no card field, so
+    /// a hand-typed one writes none — but a payment read from an Amex email knows which card it
+    /// settled, and a line that refused the card would throw that away on the first edit.
+    @Test func aPaymentLineMayNameTheCardItSettled() throws {
+        let alert = try #require(ManualEntryParser.parseFirst(
+            "Manual | payment | -1044.97 | 2026-09-30 | 21006 | Amex payment"))
+
+        #expect(alert.isPayment)
+        #expect(alert.cardSuffix == "21006")
+        #expect(alert.amountMinor == -104_497)
+    }
+
+    /// A deposit still may not. Money that arrived by Venmo or by hand did not come off a card.
+    @Test func aDepositLineStillMayNotNameACard() {
         #expect(ManualEntryParser.parseAll(
-            "Manual | payment | -825.77 | 2026-10-03 | 21006 | AMEX PAYMENT").isEmpty)
+            "Manual | deposit | 25.00 | 2026-10-03 | 21006 | ZELLE").isEmpty)
     }
 
     /// The three kinds are told apart by the field, and only one of them takes a card.

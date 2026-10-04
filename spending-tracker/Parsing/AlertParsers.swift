@@ -22,8 +22,9 @@ nonisolated enum AlertParsers {
     /// Reflects every parser's version, so it moves whenever any of them changes. Each
     /// occupies one decimal digit — keep them under ten.
     static var version: Int {
-        FidelityAlertParser.version * 1000
-            + AmexAlertParser.version * 100
+        FidelityAlertParser.version * 10_000
+            + AmexAlertParser.version * 1_000
+            + AmexPaymentParser.version * 100
             + VenmoAlertParser.version * 10
             + ManualEntryParser.version
     }
@@ -45,6 +46,12 @@ nonisolated enum AlertParsers {
 
         let amex = AmexAlertParser.parseAll(text)
         if !amex.isEmpty { return amex }
+
+        // After the purchase alert, deliberately. Both come from Amex, both carry the same
+        // `Account Ending:` line and a dollar figure, and a purchase alert must never be read
+        // as a payment — so the parser that owns that email gets first refusal on it.
+        let payment = AmexPaymentParser.parseAll(text)
+        if !payment.isEmpty { return payment }
 
         let venmo = VenmoAlertParser.parseAll(text)
         if !venmo.isEmpty { return venmo }

@@ -338,7 +338,8 @@ currency parser, which is what makes a permissive fragment test safe.
 
 ## Payments
 
-> **A fourth kind (2026-10-03).** Paying a card off. Manual entry only so far — see below.
+> **A fourth kind (2026-10-03).** Paying a card off, from Amex's payment confirmation or by
+> hand.
 
 A payment is its own kind, not a large deposit, because it is the one movement that comes off
 **both** figures: **Balance**, because it settles spending that already happened, and **Bank**,
@@ -359,11 +360,33 @@ The sign is also why `isMoneyIn` asks the kind before the sign. A refund is gree
 is not, and both are negative: the naive rule would have coloured every payment as money
 arriving.
 
-**Not done yet: the email.** Amex's "We've received your payment" notification is not parsed.
-The samples provided were Gmail *inbox* dumps rather than the email bodies, and the listing
-snippet for this email carries no amount at all — so there is no figure to record. Everything
-else is in place for it: a parser only has to emit `.payment` with a negative amount and the
-rest follows.
+### Reading the email
+
+Amex's confirmation carries the figure under a label, not in a sentence:
+
+```text
+Payment amount:
+$1,044.97
+Processed on:
+Sep 30, 2026
+```
+
+Both are read from the line *after* their label rather than by shape, and that matters: the
+same email opens with a date of its own — `Thanks for your payment received on Sep 30, 2026` —
+so anything scanning for a date would as happily take that one. There is a test where the two
+dates differ.
+
+Two things must both be present — Amex's sentence `We received your payment` and the
+`Payment amount:` label — so a template change to either refuses rather than guesses.
+
+**The purchase alert is the reason for that care.** It arrives from the same sender, carries
+the same `Account Ending:` line and a dollar figure of its own, and is a completely different
+transaction. The registry runs the large-purchase parser first, so an alert can never be read
+as a payment, and there is a test for it.
+
+A payment may name a card, unlike a deposit. The Payment tab offers no card field, so a
+hand-typed one writes none, but a payment read from the email knows which card it settled —
+and a line that refused the card would erase that the first time the row was edited.
 
 ## Only real movements of money reach the ledger
 

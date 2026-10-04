@@ -819,6 +819,27 @@ struct LedgerStoreTests {
         #expect(!row.isDeposit)
     }
 
+    /// The whole path for an Amex payment, through the registry and the drain.
+    @Test func anAmexPaymentEmailBecomesAPayment() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.setBankBalance(200_000)
+
+        try appendAlert(AmexPaymentParserTests.realPayment, to: url)
+        ledger.drain()
+
+        #expect(ledger.bankBalanceMinor == 200_000 - 104_497, "$1,044.97 left the bank")
+
+        let rows = txns(container)
+        #expect(rows.count == 1)
+        let row = try #require(rows.first)
+        #expect(row.isPayment)
+        #expect(row.cardSuffix == "21006")
+        #expect(row.amountMinor == -104_497)
+        #expect(!row.isMoneyIn)
+        // Not a deposit, which is what puts it into the month's spend as a reduction.
+        #expect(!row.isDeposit)
+    }
+
     /// A charge still leaves the bank alone. The distinction the three kinds exist for.
     @Test func aChargeDoesNotTouchTheBank() throws {
         let (ledger, _, url) = try makeStore()
