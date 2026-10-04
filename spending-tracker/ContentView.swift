@@ -69,6 +69,11 @@ struct ContentView: View {
     @State private var isShowingBankBalance = false
     @State private var saveError: String?
 
+    /// A deletion that could not be finished. Its own state rather than sharing `saveError`,
+    /// because the two mean different things and the drain's reassurance ("nothing is lost —
+    /// the raw journal is intact") is not true of a deletion: the line is exactly what is gone.
+    @State private var deletionError: String?
+
     /// The row currently open for editing. `Txn` is `Identifiable` through its persistent id,
     /// so `sheet(item:)` can present on it directly rather than on a separate flag plus a
     /// lookup that could disagree about which row was tapped.
@@ -79,6 +84,7 @@ struct ContentView: View {
             List {
                 totalSpendSection
                 saveErrorSection
+                deletionErrorSection
                 transactionsSection
             }
             .navigationTitle("\(monthName) Spending")
@@ -144,7 +150,7 @@ struct ContentView: View {
                 DiagnosticsView(ledger: ledger)
             }
             .sheet(isPresented: $isShowingJournal) {
-                NavigationStack { JournalView() }
+                NavigationStack { JournalView(ledger: ledger) { refresh() } }
             }
             .sheet(isPresented: $isShowingBankBalance) {
                 BankBalanceView(ledger: ledger) { refresh() }
@@ -192,6 +198,31 @@ struct ContentView: View {
                 }
             }
             .listRowBackground(Color.red.opacity(0.10))
+        }
+    }
+
+    /// A deletion that did not complete. Deliberately not folded into `saveErrorSection`: the
+    /// reassurance there is that the journal is intact and nothing is lost, and after a
+    /// deletion the journal is precisely what has changed.
+    @ViewBuilder
+    private var deletionErrorSection: some View {
+        if let deletionError {
+            Section {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Color.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("That deletion did not finish")
+                            .font(.subheadline.weight(.medium))
+                        Text(deletionError)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Button("Dismiss") { self.deletionError = nil }
+                    .font(.caption)
+            }
+            .listRowBackground(Color.orange.opacity(0.10))
         }
     }
 
@@ -333,7 +364,9 @@ struct ContentView: View {
                 Text(transactionsHeader)
             } footer: {
                 Text("Tap a transaction to change it, or swipe it to delete it. Deleting also "
-                     + "removes it from the raw journal, so it will not come back.")
+                     + "removes it from the raw journal, so it will not come back. One alert can "
+                     + "carry more than one transaction — those go together, because they came "
+                     + "from the same line.")
             }
         }
     }
@@ -344,8 +377,21 @@ struct ContentView: View {
     /// Deleting a deposit gives the bank back what it took, and there is nothing to do for
     /// that here: the balance is folded from the journal, so removing the line removes its
     /// effect. The refresh afterwards is what shows the new figure.
+    ///
+    /// Both failures are reported rather than swallowed. A journal that could not be written
+    /// means nothing was deleted at all; a store that could not be saved means the row is
+    /// still there. Either way the row staying put after a swipe has to look like a failure,
+    /// not like the app undoing the delete.
     private func deleteTransactions(at offsets: IndexSet, in rows: [Txn]) {
-        ledger.delete(offsets.map { rows[$0] })
+        do {
+            let result = try ledger.delete(offsets.map { rows[$0] })
+            deletionError = result.saveError.map {
+                "The journal was updated, but the ledger could not be: \($0) "
+                    + "The transaction is still listed — swipe it again to remove it."
+            }
+        } catch {
+            deletionError = error.localizedDescription
+        }
         refresh()
     }
 
@@ -451,36 +497,77 @@ private struct TxnRow: View {
 
 /// The raw journal, kept reachable for diagnosis. If the ledger ever disagrees with what was
 /// actually received, this is the record that settles it.
+///
+/// It can also delete a line, which until now was impossible for the lines that produced no
+/// transaction: the feed deletes rows, and a body that resolved to nothing — a merchant's own
+/// confirmation, an OTP, a statement notice — has no row to swipe.
 struct JournalView: View {
+
+    let ledger: LedgerStore
+
+    /// Called after a deletion succeeds, so the feed, the month total and the Bank figure are
+    /// all recomputed from the journal that just changed.
+    let onChanged: () -> Void
+
     @Environment(\.dismiss) private var dismiss
     @State private var records: [JournalRecord] = []
 
+    /// The line a swipe is asking about. The swipe is not the decision: this screen destroys
+    /// the app's source of truth, and the dialog is the one place the user is told what else
+    /// goes with the line they picked.
+    @State private var pendingDeletion: JournalRecord?
+
+    @State private var errorMessage: String?
+    @State private var note: String?
+
     var body: some View {
-        List {
+        // Bound once, exactly as the feed binds its rows, so the offsets a swipe reports can
+        // only ever be resolved against the array that was actually drawn.
+        let shown = Array(records.reversed())
+
+        return List {
             Section {
                 Text(JournalLocation.directoryPath)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
             }
-            Section("\(records.count) lines · newest first") {
-                ForEach(Array(records.reversed())) { record in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            // No phase chip: one line per alert now, so it would say the same
-                            // thing on every row. Older journals still hold an enter/result
-                            // pair and simply read as two lines with the same body.
-                            Text(record.receivedAt, format: .dateTime.hour().minute().second())
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("\(record.charCount) ch")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Text(record.rawText).font(.footnote.monospaced())
+
+            if let errorMessage {
+                Section {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Color.orange)
+                        Text(errorMessage)
+                            .font(.caption)
                     }
-                    .padding(.vertical, 2)
                 }
+                .listRowBackground(Color.orange.opacity(0.10))
+            }
+
+            if let note {
+                Section {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                ForEach(shown) { record in
+                    JournalRow(record: record)
+                }
+                .onDelete { offsets in
+                    // The row stays on screen: nothing is removed until the dialog is
+                    // confirmed, so a cancelled swipe leaves the journal exactly as it was.
+                    guard let index = offsets.first, shown.indices.contains(index) else { return }
+                    pendingDeletion = shown[index]
+                }
+            } header: {
+                Text("\(records.count) lines · newest first")
+            } footer: {
+                Text("Swipe a line to delete it. The ledger is rebuilt by replaying this file, so "
+                     + "a line and the transaction it recorded go together — a row whose line is "
+                     + "gone would only come back.")
             }
         }
         .navigationTitle("Raw journal")
@@ -490,7 +577,119 @@ struct JournalView: View {
                 Button("Done") { dismiss() }
             }
         }
-        .task { records = JournalStore.readAll(from: JournalLocation.fileURL) }
+        .task { reload() }
+        .confirmationDialog(
+            "Delete this journal line?",
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDeletion
+        ) { record in
+            // Deliberately not "Delete": the swipe action behind this dialog already owns that
+            // label, and two buttons with one name is a coin toss for a person and ambiguous
+            // for anything reading the screen.
+            Button("Delete line", role: .destructive) { delete(record) }
+            Button("Cancel", role: .cancel) { pendingDeletion = nil }
+        } message: { record in
+            // What else goes is read from the STORE, not from the text. The two can disagree:
+            // a body that parsed when it was ingested and no longer does still owns its row,
+            // and the copy must not promise otherwise.
+            Text(record.outcome.message(storedRows: ledger.rowsRecorded(by: record)))
+        }
+    }
+
+    private func reload() {
+        records = JournalStore.readAll(from: JournalLocation.fileURL)
+    }
+
+    private func delete(_ record: JournalRecord) {
+        let outcome = record.outcome
+        pendingDeletion = nil
+        errorMessage = nil
+        note = nil
+
+        do {
+            let result = try ledger.deleteJournalLine(record)
+            reload()
+            onChanged()
+
+            if let saveError = result.saveError {
+                // Which half got done decides what the user is told, and `lines` is what says
+                // it: a line already gone with its row left behind is a different problem from
+                // a deletion that refused outright, and only the first has a remedy in the feed.
+                if result.lines > 0 {
+                    errorMessage = "The line is gone from the journal, but the ledger could not "
+                        + "be updated: \(saveError) The transaction is still in the feed — swipe "
+                        + "it there to remove it."
+                } else {
+                    errorMessage = "Nothing was deleted. \(saveError)"
+                }
+            } else {
+                note = note(for: outcome, rows: result.rows)
+            }
+        } catch {
+            // The journal could not be rewritten. For an ordinary line that means nothing
+            // happened at all; for an edit the row may already be gone and the surviving line
+            // will re-derive it on the next drain. The refresh is what settles either case, so
+            // the screen ends up showing what the file says rather than what it said before.
+            reload()
+            onChanged()
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// What to say after a deletion that succeeded.
+    ///
+    /// Derived from the line's own outcome, not from the row count, because the count cannot
+    /// tell these apart: deleting a `Bank` line removes no rows but definitely moves the Bank
+    /// figure, and deleting an `Edit` line removes a row without removing any transaction — it
+    /// re-derives it from the line the edit superseded.
+    private func note(for outcome: JournalLineOutcome, rows: Int) -> String {
+        switch outcome {
+        case .instruction(.setBankBalance):
+            return "Balance line deleted. The Bank figure is restated from what is left."
+        case .instruction(.edit):
+            return "Edit line deleted. The row it changed reads as the original line said."
+        case .movement where rows > 1:
+            return "Line deleted, with all \(rows) transactions it recorded."
+        case .movement:
+            return "Line deleted, with the transaction it recorded."
+        case .empty, .nothing:
+            return rows > 0
+                ? "Line deleted, with the record the ledger still held for it."
+                : "Line deleted. Nothing in the ledger changed."
+        }
+    }
+}
+
+/// One journal line.
+///
+/// Extracted for the same reason `TxnRow` is: the row is drawn by two callers' worth of
+/// context and the body reads better without it inline. No accessibility merging — the raw
+/// text has to stay its own element, which is how both a person with VoiceOver and the UI
+/// test find the line they mean.
+private struct JournalRow: View {
+    let record: JournalRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                // No phase chip: one line per alert now, so it would say the same thing on
+                // every row. Older journals still hold an enter/result pair and simply read
+                // as two lines with the same body.
+                Text(record.receivedAt, format: .dateTime.hour().minute().second())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(record.charCount) ch")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(record.rawText).font(.footnote.monospaced())
+        }
+        .padding(.vertical, 2)
     }
 }
 

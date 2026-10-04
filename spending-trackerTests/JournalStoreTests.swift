@@ -121,4 +121,116 @@ struct JournalStoreTests {
         let distinctSeconds = Set(back.map { Int($0.receivedAt.timeIntervalSince1970) })
         #expect(distinctSeconds.count <= back.count)
     }
+
+    // MARK: - Removing lines
+
+    /// A line the current schema cannot decode is **evidence**, and every rewrite used to
+    /// destroy it: the file was rebuilt by re-encoding only the records `readAll` had managed
+    /// to decode. `JournalRecord`'s own note describes the day a new field made every older
+    /// line undecodable — which is exactly when this would have bitten, silently.
+    @Test func aRewriteKeepsLinesItCannotDecode() throws {
+        let url = tempJournalURL()
+        let doomed = UUID()
+        try JournalStore.append(
+            .diagnostic(runID: UUID(), phase: "capture", raw: realBody, note: ""), to: url)
+        try JournalStore.append(
+            .diagnostic(runID: doomed, phase: "capture", raw: "delete me", note: ""), to: url)
+
+        // Valid JSON, a shape this build does not know how to read.
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(#"{"id":"deadbeef","phase":"capture"}"#.utf8) + Data([0x0A]))
+        try handle.close()
+
+        let removed = try JournalStore.remove(from: url) { $0.runID == doomed }
+
+        #expect(removed == 1)
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        #expect(raw.contains(#""id":"deadbeef""#), "an undecodable line is carried through, not dropped")
+        #expect(raw.contains(realBody))
+        #expect(!raw.contains("delete me"))
+    }
+
+    /// Removing nothing must not rewrite the file. This is what keeps a journal with nothing to
+    /// purge from being rewritten on every foreground — and what makes `remove` safe to call on
+    /// a file it has no business touching.
+    @Test func removingNothingLeavesTheFileAlone() throws {
+        let url = tempJournalURL()
+        try JournalStore.append(
+            .diagnostic(runID: UUID(), phase: "capture", raw: realBody, note: ""), to: url)
+        let before = try Data(contentsOf: url)
+
+        let removed = try JournalStore.remove(from: url) { _ in false }
+
+        #expect(removed == 0)
+        #expect(try Data(contentsOf: url) == before)
+    }
+
+    /// A missing journal is not a failure — a fresh install has nothing to remove.
+    @Test func removingFromAMissingJournalIsHarmless() throws {
+        #expect(try JournalStore.remove(from: tempJournalURL()) { _ in true } == 0)
+    }
+
+    /// One damaged byte must not take the whole file with it.
+    ///
+    /// Decoding the journal as a single UTF-8 string fails the entire read if any byte anywhere
+    /// is invalid — and a torn write is a real thing here, because the journal is appended to by
+    /// a process that can be killed mid-write. Whole-file decoding would stop every deletion,
+    /// and through the purge it would quietly stop the retention window as well. Decoded per
+    /// line, the damage stays on the line it is on, and that line goes back out as the bytes it
+    /// came in as.
+    @Test func aDamagedByteDoesNotMakeTheJournalUnreadable() throws {
+        let url = tempJournalURL()
+        let doomed = UUID()
+        try JournalStore.append(
+            .diagnostic(runID: UUID(), phase: "capture", raw: realBody, note: ""), to: url)
+        try JournalStore.append(
+            .diagnostic(runID: doomed, phase: "capture", raw: "delete me", note: ""), to: url)
+
+        // A trailing line torn off inside a multi-byte character: `{"` then half of a euro sign.
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data([0x7B, 0x22, 0xE2, 0x82]))
+        try handle.write(contentsOf: Data([0x0A]))
+        try handle.close()
+
+        let removed = try JournalStore.remove(from: url) { $0.runID == doomed }
+
+        #expect(removed == 1, "a damaged line must not stop the removal")
+        let raw = try Data(contentsOf: url)
+        #expect(raw.range(of: Data(realBody.utf8)) != nil, "the good lines are untouched")
+        #expect(raw.range(of: Data([0xE2, 0x82])) != nil,
+                "the damaged bytes come back out exactly as they went in")
+    }
+
+    /// The reason `remove` is one primitive rather than `readAll` + filter + a write.
+    ///
+    /// The composed shape takes the lock three separate times, so an alert appended in the gap
+    /// is read as absent and then written away. That alert can be a real charge, and because
+    /// the ledger is derived from this file, losing it loses the charge everywhere. Under one
+    /// lock hold the append can only land before the read — where the predicate does not match
+    /// it — or after the write, where it survives.
+    @Test func anAppendDuringARemovalIsNeverLost() async throws {
+        let url = tempJournalURL()
+        let doomed = UUID()
+        for index in 0..<40 {
+            try JournalStore.append(
+                .diagnostic(runID: doomed, phase: "capture", raw: "junk \(index)", note: ""), to: url)
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try? JournalStore.remove(from: url) { $0.runID == doomed }
+            }
+            group.addTask {
+                try? JournalStore.append(
+                    .diagnostic(runID: UUID(), phase: "capture", raw: realBody, note: ""), to: url)
+            }
+        }
+
+        let back = JournalStore.readAll(from: url)
+        #expect(back.allSatisfy { $0.runID != doomed }, "the removal still has to happen")
+        #expect(back.contains { $0.rawText == realBody },
+                "an alert that arrived during a rewrite must survive it")
+    }
 }

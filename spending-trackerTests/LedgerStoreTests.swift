@@ -8,7 +8,14 @@ import SwiftData
 import Testing
 @testable import spending_tracker
 
+/// Serialized, unlike the rest of the suite. One test below writes the pre-journal balance key
+/// in `UserDefaults`, which is process-wide state that `refreshBankBalance` reads on every
+/// drain — so a parallel test draining an empty journal would adopt it and append a `Bank`
+/// line to a journal it does not own, which is a flake in whichever test happens to lose the
+/// race. `BankBalance` has no injection point, deliberately: the value is a one-time handover
+/// from an older version and there is nothing to inject.
 @MainActor
+@Suite(.serialized)
 struct LedgerStoreTests {
 
     private let trailer = " Msg&Data rates may apply. Reply STOP to cancel."
@@ -455,9 +462,11 @@ struct LedgerStoreTests {
         ledger.drain()
         #expect(txns(container).count == 1)
 
-        let removed = ledger.delete(txns(container))
+        let removed = try ledger.delete(txns(container))
 
-        #expect(removed == 1)
+        #expect(removed.rows == 1)
+        #expect(removed.lines == 1)
+        #expect(removed.saveError == nil)
         #expect(txns(container).isEmpty)
         #expect(events(container).isEmpty)
         #expect(JournalStore.readAll(from: url).isEmpty)
@@ -470,7 +479,7 @@ struct LedgerStoreTests {
         try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
         ledger.drain()
 
-        ledger.delete(txns(container))
+        try ledger.delete(txns(container))
         ledger.drain()
 
         #expect(txns(container).isEmpty)
@@ -485,7 +494,7 @@ struct LedgerStoreTests {
         #expect(txns(container).count == 2)
 
         let doomed = try #require(txns(container).first { $0.merchant == "DELETE ME" })
-        ledger.delete([doomed])
+        try ledger.delete([doomed])
 
         let left = txns(container)
         #expect(left.count == 1)
@@ -503,7 +512,7 @@ struct LedgerStoreTests {
         let (ledger, container, url) = try makeStore()
         try appendAlert(charge("2.50", "DELETE ME"), to: url)
         ledger.drain()
-        ledger.delete(txns(container))
+        try ledger.delete(txns(container))
 
         try appendAlert(charge("9.99", "LATER"), to: url)
         ledger.drain()
@@ -518,8 +527,323 @@ struct LedgerStoreTests {
         try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
         ledger.drain()
 
-        #expect(ledger.delete([]) == 0)
+        #expect(try ledger.delete([]).rows == 0)
         #expect(txns(container).count == 1)
+    }
+
+    // MARK: - Deleting from the journal
+    //
+    // The other direction of the same operation: the Raw journal screen picks a LINE, where the
+    // feed picks a row. Deleting from a line is the only way to remove a body that resolved to
+    // no charge — a merchant's own confirmation, an OTP, a statement notice — because those
+    // have no row to swipe.
+
+    /// Writes a body that resolves to no ledger entry, exactly as the Email automation does.
+    private func appendJunk(_ body: String, to url: URL) throws {
+        try appendAlert(body, to: url)
+    }
+
+    /// The line the Raw journal screen would hand back: the newest one, by file order.
+    private func newestRecord(in url: URL) throws -> JournalRecord {
+        try #require(JournalStore.readAll(from: url).last)
+    }
+
+    @Test func deletingAJournalLineRemovesTheTransactionItRecorded() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE*00HS5MV"), to: url)
+        ledger.drain()
+
+        let result = try ledger.deleteJournalLine(try newestRecord(in: url))
+
+        #expect(result.lines == 1)
+        #expect(result.rows == 1, "the row the line produced goes with it")
+        #expect(result.saveError == nil)
+        #expect(txns(container).isEmpty)
+        #expect(events(container).isEmpty)
+        #expect(JournalStore.readAll(from: url).isEmpty)
+    }
+
+    /// The case the feature exists for. A body that resolved to nothing has no row, so the
+    /// feed's swipe-to-delete could never reach it.
+    @Test func aJournalLineThatRecordedNothingCanStillBeDeleted() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "KEEP ME"), to: url)
+        try appendJunk(merchantReceipt, to: url)
+        ledger.drain()
+        #expect(events(container).count == 1, "the receipt resolves to no charge")
+
+        let result = try ledger.deleteJournalLine(try newestRecord(in: url))
+
+        #expect(result.lines == 1)
+        #expect(result.rows == 0, "there is no row to remove, and the copy must not claim one")
+        let left = JournalStore.readAll(from: url)
+        #expect(left.count == 1)
+        #expect(left.first?.rawText.contains("KEEP ME") == true)
+        #expect(txns(container).count == 1, "the other invocation is untouched")
+    }
+
+    /// A journal written before single-line capture holds an `enter`/`result` pair under one
+    /// runID. Deleting either line has to take both: the surviving twin would rebuild the row
+    /// on the very next drain, which is the whole failure the journal edit exists to prevent.
+    @Test func deletingOneLineOfALegacyPairRemovesBoth() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendLegacyPair(charge("2.50", "BREEZE*00HS5MV"), to: url)
+        ledger.drain()
+        #expect(JournalStore.readAll(from: url).count == 2)
+
+        let result = try ledger.deleteJournalLine(try #require(JournalStore.readAll(from: url).first))
+        ledger.drain()
+
+        #expect(result.lines == 2, "both halves of the invocation go")
+        #expect(JournalStore.readAll(from: url).isEmpty)
+        #expect(txns(container).isEmpty, "and the twin must not bring it back")
+    }
+
+    /// One message can carry two alerts. The line is the invocation's, so deleting it removes
+    /// both rows — there is no way to remove one and keep the other, because the journal line
+    /// they share is the evidence for both.
+    @Test func deletingABodyWithTwoAlertsRemovesBothTransactions() throws {
+        let (ledger, container, url) = try makeStore()
+        let body = charge("36.00", "Georgia Tech Parking S") + charge("73.00", "CENTRAL ROCK MID (ATL)")
+        try appendAlert(body, to: url)
+        ledger.drain()
+        #expect(txns(container).count == 2)
+
+        let result = try ledger.deleteJournalLine(try newestRecord(in: url))
+
+        #expect(result.rows == 2)
+        #expect(txns(container).isEmpty)
+        #expect(events(container).isEmpty)
+    }
+
+    /// The same change seen from the feed, which is where it is a behaviour change: swiping one
+    /// row of a two-alert message now takes the sibling too. Before, the sibling stayed in the
+    /// store with its journal line gone — a row a rebuild would drop with no explanation.
+    @Test func theFeedSwipeRemovesEveryRowOfTheInvocation() throws {
+        let (ledger, container, url) = try makeStore()
+        let body = charge("36.00", "Georgia Tech Parking S") + charge("73.00", "CENTRAL ROCK MID (ATL)")
+        try appendAlert(body, to: url)
+        ledger.drain()
+
+        let one = try #require(txns(container).first)
+        let result = try ledger.delete([one])
+
+        #expect(result.rows == 2, "one swipe, one invocation, both rows")
+        #expect(txns(container).isEmpty)
+        #expect(JournalStore.readAll(from: url).isEmpty)
+    }
+
+    @Test func deletingAJournalLineLeavesOtherInvocationsAlone() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "KEEP ME"), to: url)
+        try appendAlert(charge("9.99", "DELETE ME"), to: url)
+        ledger.drain()
+
+        let doomed = try #require(
+            JournalStore.readAll(from: url).first { $0.rawText.contains("DELETE ME") })
+        try ledger.deleteJournalLine(doomed)
+        ledger.drain()
+
+        let left = txns(container)
+        #expect(left.count == 1)
+        #expect(left.first?.merchant == "KEEP ME")
+    }
+
+    /// Deleting from the journal must be as permanent as deleting from the feed. Without the
+    /// line going too, this drain rebuilds the row and the delete looks like it undid itself.
+    @Test func aDeletedJournalLineDoesNotComeBackOnTheNextDrain() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "DELETE ME"), to: url)
+        ledger.drain()
+        try ledger.deleteJournalLine(try newestRecord(in: url))
+
+        try appendAlert(charge("9.99", "LATER"), to: url)
+        ledger.drain()
+
+        let left = txns(container)
+        #expect(left.count == 1)
+        #expect(left.first?.merchant == "LATER")
+    }
+
+    /// Deleting a deposit's line gives the money back with no separate bookkeeping — the fold
+    /// simply sees one fewer line. This is the reason the balance is derived at all.
+    @Test func deletingADepositLineFromTheJournalGivesTheMoneyBack() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.setBankBalance(10_000)
+        try appendDeposit("25.00", "ZELLE FROM SAM", to: url)
+        ledger.drain()
+        #expect(ledger.bankBalanceMinor == 12_500)
+
+        let result = try ledger.deleteJournalLine(try newestRecord(in: url))
+        ledger.drain()
+
+        #expect(result.rows == 1)
+        #expect(ledger.bankBalanceMinor == 10_000)
+        #expect(txns(container).isEmpty)
+    }
+
+    /// An instruction line is deletable like anything else, and its consequence is visible:
+    /// dropping the balance assertion restates the Bank figure from what is left, rather than
+    /// leaving the number it was asserting.
+    @Test func deletingABalanceLineRestatesTheBankFromWhatIsLeft() throws {
+        let (ledger, _, url) = try makeStore()
+        try ledger.setBankBalance(10_000)
+        try appendDeposit("25.00", "ZELLE FROM SAM", to: url)
+        ledger.drain()
+        #expect(ledger.bankBalanceMinor == 12_500)
+
+        let balanceLine = try #require(JournalStore.readAll(from: url).first)
+        #expect(balanceLine.outcome == .instruction(.setBankBalance(minor: 10_000)))
+
+        let result = try ledger.deleteJournalLine(balanceLine)
+        ledger.drain()
+
+        #expect(result.rows == 0, "an instruction is not a row")
+        #expect(ledger.bankBalanceMinor == 2_500, "only the deposit is left to fold")
+    }
+
+    /// And an edit is deletable, which is the only way to undo one from the journal side: the
+    /// row goes back to what the line this edit superseded said.
+    @Test func deletingAnEditLineRevertsTheRowItChanged() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+
+        try ledger.edit(
+            try #require(txns(container).first),
+            merchant: "BREEZE COFFEE", amount: "4.00", date: nil, cardSuffix: "7224")
+        ledger.drain()
+        #expect(txns(container).first?.merchant == "BREEZE COFFEE")
+
+        let result = try ledger.deleteJournalLine(try newestRecord(in: url))
+        ledger.drain()
+
+        // The row the edit named goes with the line, so the drain re-derives it from the
+        // original. Counting it is right: it is the row that changes.
+        #expect(result.rows == 1)
+        let row = try #require(txns(container).first)
+        #expect(row.merchant == "BREEZE", "the original line is still there, and now unedited")
+        #expect(row.amountMinor == 250)
+    }
+
+    /// Deleting an edit line writes the **store** first — the opposite of every other deletion —
+    /// and this is why. Here the journal write is made to fail after the row has already gone,
+    /// which in the other order would leave the store holding the edited values with no edit
+    /// left to explain them, permanently. The surviving edit line rebuilds the row instead.
+    @Test func aFailedEditDeletionRebuildsTheRowFromTheSurvivingLine() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+        try ledger.edit(
+            try #require(txns(container).first),
+            merchant: "BREEZE COFFEE", amount: "4.00", date: nil, cardSuffix: "7224")
+        ledger.drain()
+        #expect(txns(container).first?.merchant == "BREEZE COFFEE")
+
+        let editLine = try newestRecord(in: url)
+        let saved = try Data(contentsOf: url)
+
+        // Present and unreadable as a file, so the store half lands and the journal half throws.
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+
+        #expect(throws: JournalStoreError.self) {
+            try ledger.deleteJournalLine(editLine)
+        }
+        #expect(txns(container).isEmpty, "the store half did land — the row was re-derivable, not removed")
+
+        // The journal comes back, and with it the row: the edit line survived, so the drain
+        // re-ingests the original and replays the edit onto it.
+        try FileManager.default.removeItem(at: url)
+        try saved.write(to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        #expect(row.merchant == "BREEZE COFFEE", "the surviving line rebuilds the row as it was")
+        #expect(row.amountMinor == 400)
+    }
+
+    /// Deleting the newest of two edits must not throw the older one away: the row is re-derived
+    /// and then every edit still standing is replayed onto it, in journal order.
+    @Test func deletingOneEditLeavesTheEarlierOnesStanding() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+
+        try ledger.edit(
+            try #require(txns(container).first),
+            merchant: "FIRST EDIT", amount: "3.00", date: nil, cardSuffix: "7224")
+        ledger.drain()
+        try ledger.edit(
+            try #require(txns(container).first),
+            merchant: "SECOND EDIT", amount: "4.00", date: nil, cardSuffix: "7224")
+        ledger.drain()
+        #expect(txns(container).first?.merchant == "SECOND EDIT")
+
+        try ledger.deleteJournalLine(try newestRecord(in: url))
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        #expect(row.merchant == "FIRST EDIT", "the surviving edit is replayed onto the re-derived row")
+        #expect(row.amountMinor == 300)
+    }
+
+    /// The regression that made the atomic rewrite necessary. A journal that is present and
+    /// unreadable must not be treated as empty: the rows would be deleted, the lines would
+    /// survive, and the next drain would bring every row back.
+    @Test func aJournalThatCannotBeReadDeletesNothing() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+        let record = try newestRecord(in: url)
+
+        // Present, and unreadable as a file: a directory where the journal should be.
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+
+        #expect(throws: JournalStoreError.self) {
+            try ledger.deleteJournalLine(record)
+        }
+        #expect(txns(container).count == 1, "the row must survive a journal that could not be read")
+        #expect(events(container).count == 1)
+    }
+
+    /// The count the confirmation is built from has to come from the store, not from re-parsing
+    /// the text — the two can disagree, and the copy is the thing the user trusts before
+    /// destroying the only copy of the evidence.
+    @Test func rowsRecordedCountsWhatTheStoreHolds() throws {
+        let (ledger, _, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        try appendJunk("Your Uber code is 1234", to: url)
+        ledger.drain()
+
+        let stored = JournalStore.readAll(from: url)
+        let chargeLine = try #require(stored.first { $0.rawText.contains("BREEZE") })
+        let junkLine = try #require(stored.first { $0.rawText.contains("Uber") })
+
+        #expect(ledger.rowsRecorded(by: chargeLine) == 1)
+        #expect(ledger.rowsRecorded(by: junkLine) == 0)
+    }
+
+    /// A pre-journal balance in `UserDefaults` is adopted only when the fold derives nothing.
+    /// That branch is skipped on any device whose journal already derives a balance — so the
+    /// stale value was never cleared, and deleting the last line that derived one would adopt
+    /// it and write a balance nobody set into the journal.
+    @Test func deletingTheLastDepositDoesNotResurrectAPreJournalBalance() throws {
+        let (ledger, _, url) = try makeStore()
+        UserDefaults.standard.set(50_000, forKey: BankBalance.legacyDefaultsKey)
+        defer { BankBalance.clearLegacyStoredValue() }
+
+        try appendDeposit("25.00", "ZELLE FROM SAM", to: url)
+        ledger.drain()
+        #expect(ledger.bankBalanceMinor == 2_500)
+
+        try ledger.deleteJournalLine(try newestRecord(in: url))
+        ledger.drain()
+
+        #expect(ledger.bankBalanceMinor == 0)
+        #expect(JournalStore.readAll(from: url).isEmpty,
+                "the drain may not fabricate a Bank line from a value this version never had")
     }
 
     // MARK: - Hashing
@@ -603,7 +927,7 @@ struct LedgerStoreTests {
         ledger.drain()
         #expect(txns(container).count == 1)
 
-        ledger.delete(txns(container))
+        try ledger.delete(txns(container))
         ledger.drain()
 
         #expect(txns(container).isEmpty)
@@ -751,7 +1075,7 @@ struct LedgerStoreTests {
         ledger.drain()
         #expect(ledger.bankBalanceMinor == 12_500)
 
-        ledger.delete(txns(container))
+        try ledger.delete(txns(container))
         ledger.drain()
 
         #expect(ledger.bankBalanceMinor == 10_000)

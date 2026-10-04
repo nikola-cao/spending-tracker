@@ -107,7 +107,7 @@ final class LedgerStore {
 
         // The purge runs only AFTER the store has accepted the write. If the save failed the
         // journal is the only copy of anything, so nothing may be dropped from it.
-        result.journalLinesDropped = purgeExpired(records, now: Date())
+        result.journalLinesDropped = purgeExpired(now: Date())
         return result
     }
 
@@ -245,6 +245,17 @@ final class LedgerStore {
     private func refreshBankBalance(derived: Int?, records: [JournalRecord]) {
         if let derived {
             bankBalanceMinor = derived
+            // The journal already says what the balance is, so the pre-journal `UserDefaults`
+            // value can never be adopted now — clear it while we are here.
+            //
+            // This is not tidiness. Adoption is attempted only when the fold derives NOTHING
+            // (`derived` is nil), and on a device that already had a deposit when the balance
+            // moved into the journal, this branch is taken instead and the legacy value was
+            // never cleared. Delete that last deposit — which the Raw journal now offers — and
+            // the fold derives nothing on the next drain, at which point the stale value is
+            // adopted and written into the journal as a balance nobody set, restating the Bank
+            // figure to a number from a previous version of the app.
+            BankBalance.clearLegacyStoredValue()
             return
         }
 
@@ -348,35 +359,30 @@ final class LedgerStore {
 
     /// Drops journal lines that resolved to no charge and have outlived the retention window.
     ///
-    /// Runs over the records the drain already read, so it costs nothing extra to decide.
-    /// `JournalStore.replace` swaps the file in atomically, so an interruption leaves the
-    /// original intact. This is the only place in the app that deliberately discards captured
-    /// text.
-    private func purgeExpired(_ records: [JournalRecord], now: Date) -> Int {
-        guard !records.isEmpty else { return 0 }
+    /// Asked as "which line may go" rather than "which lines to keep", so the decision is a
+    /// pure function of one record and can be made **inside** `JournalStore.remove`'s critical
+    /// section. That is the point of the shape: the records the drain read at its start are
+    /// already stale by the time the purge runs — a whole ingest and a save later — so
+    /// rebuilding the file from that list would write away any alert that arrived meanwhile.
+    /// That alert can be a real charge.
+    ///
+    /// This is the only place in the app that deliberately discards captured text.
+    private func purgeExpired(now: Date) -> Int {
         let cutoff = now.addingTimeInterval(-Self.nonChargeRetention)
-
-        let kept = records.filter { record in
+        // A purge that cannot run is harmless — the same lines go on a later drain — so the
+        // error is deliberately swallowed here, unlike in a deletion the user asked for.
+        return (try? JournalStore.remove(from: journalURL) { record in
             let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !body.isEmpty else { return record.receivedAt > cutoff }
+            guard !body.isEmpty else { return record.receivedAt <= cutoff }
             // A charge or a deposit is kept forever, whenever it arrived: the ledger row it
             // produced has to stay derivable from this line for the rest of the app's life.
-            if AlertParsers.parseAll(body).contains(where: \.isLedgerEntry) { return true }
+            if AlertParsers.parseAll(body).contains(where: \.isLedgerEntry) { return false }
             // An instruction too, and for the same reason — the bank balance is rebuilt by
             // folding over these lines, so dropping one would quietly restate the balance.
-            if JournalInstructionParser.isInstruction(body) { return true }
+            if JournalInstructionParser.isInstruction(body) { return false }
             // Anything else — including an empty body — survives only inside the window.
-            return record.receivedAt > cutoff
-        }
-
-        guard kept.count < records.count else { return 0 }
-        do {
-            try JournalStore.replace(contentsOf: journalURL, with: kept)
-        } catch {
-            // Losing a purge is harmless — the same lines are dropped on a later drain.
-            return 0
-        }
-        return records.count - kept.count
+            return record.receivedAt <= cutoff
+        }) ?? 0
     }
 
     // MARK: - Manual entry
@@ -519,6 +525,17 @@ final class LedgerStore {
 
     // MARK: - Deleting
 
+    /// What a deletion removed, and whether the store half of it succeeded.
+    struct JournalDeletion: Equatable {
+        /// Journal lines removed. Zero is ordinary — it means nothing matched.
+        var lines = 0
+        /// Ledger rows removed: one `AlertEvent` per recorded alert, plus any row that had none.
+        var rows = 0
+        /// Non-nil when the journal was rewritten but the store refused the delete. The rows
+        /// are still in the store and still on screen; the user finishes from the feed.
+        var saveError: String?
+    }
+
     /// Removes charges, and the journal lines they came from.
     ///
     /// **The journal edit is not optional.** The store is derived: the drain re-reads the
@@ -530,19 +547,26 @@ final class LedgerStore {
     /// The reverse order fails the other way: the row disappears, then silently comes back on
     /// the next drain, which is both confusing and looks like a bug in the app rather than a
     /// failed write.
+    ///
+    /// Throws when the journal could not be rewritten at all — the one case where nothing has
+    /// happened yet, so the caller can simply try again. A store save that fails *after* the
+    /// rewrite is a different thing and is reported in `JournalDeletion.saveError` instead of
+    /// thrown, because the deletion is by then half done and the caller needs to know which
+    /// half.
+    ///
+    /// Deleting by row removes the whole **invocation**, not only the row that was tapped. The
+    /// event carries the invocation identity and a single message can carry more than one
+    /// alert, so a sibling row goes with it. That is deliberate: the journal line belongs to
+    /// the invocation, and a sibling left behind would be a row whose evidence is gone — one a
+    /// rebuild would drop with no explanation.
     @discardableResult
-    func delete(_ txns: [Txn]) -> Int {
-        guard !txns.isEmpty else { return 0 }
-        let context = container.mainContext
+    func delete(_ txns: [Txn]) throws -> JournalDeletion {
+        guard !txns.isEmpty else { return JournalDeletion() }
 
-        // The event carries the invocation identity; deleting it cascades to its transaction.
-        var events: [AlertEvent] = []
         var runIDs = Set<UUID>()
         var orphans: [Txn] = []
-
         for txn in txns {
             if let event = txn.event {
-                events.append(event)
                 runIDs.insert(event.runID)
             } else {
                 // Should not happen — every charge is derived from an event — but a row that
@@ -551,25 +575,152 @@ final class LedgerStore {
             }
         }
 
-        removeJournalRecords(runIDs: runIDs)
-
-        for event in events { context.delete(event) }
-        for txn in orphans { context.delete(txn) }
-        try? context.save()
-
-        return events.count + orphans.count
+        return try deleteInvocations(runIDs: runIDs, orphanTxns: orphans)
     }
 
-    /// Drops every journal line written by the given invocations.
+    /// Deletes one line of the raw journal, and whatever the ledger derived from it.
     ///
-    /// Atomic and staged like the retention purge, and for the same reason: the journal is the
-    /// only thing here that must never be left half-written.
-    private func removeJournalRecords(runIDs: Set<UUID>) {
-        guard !runIDs.isEmpty else { return }
-        let records = JournalStore.readAll(from: journalURL)
-        let kept = records.filter { !runIDs.contains($0.runID) }
-        guard kept.count < records.count else { return }
-        try? JournalStore.replace(contentsOf: journalURL, with: kept)
+    /// The entry point the Raw journal screen uses. It takes the `JournalRecord` rather than a
+    /// bare `runID` so the screen never has to know the identity rule, and it removes **every**
+    /// line of that record's invocation: the invocation is the unit the store dedups on
+    /// (`AlertEvent.occurrenceKey`), and a journal written before single-line capture holds an
+    /// `enter`/`result` pair under one `runID`. Removing only the line that was tapped would
+    /// leave its twin to rebuild the row on the very next drain.
+    ///
+    /// A line that produced nothing — a merchant's own confirmation, an OTP, a statement
+    /// notice — has no rows to remove and simply goes. That case is most of the reason the
+    /// feature exists: those lines have no ledger row to swipe, so until now they could not be
+    /// deleted from the app at all.
+    @discardableResult
+    func deleteJournalLine(_ record: JournalRecord) throws -> JournalDeletion {
+        // An edit is an instruction *about* a row rather than a row, which makes it the one case
+        // where removing the line is not the whole job. `applyEdits` only applies the edits it
+        // can still see and `ingest` never revisits a row it already knows, so taking the line
+        // away on its own would leave the store holding the edited values while the journal,
+        // replayed, no longer says them — the screen and a rebuild would disagree, and the
+        // confirmation's promise that the row reverts would simply be false.
+        //
+        // So the row it named goes too, and the next drain re-derives it from the original line
+        // and replays whatever edits are still standing. That much is the same property
+        // everything here rests on: the store is a pure function of the journal.
+        if case .instruction(.edit(let edit)) = record.outcome {
+            return try deleteEditLine(record, named: edit.occurrenceKey)
+        }
+        return try deleteInvocations(runIDs: [record.runID])
+    }
+
+    /// Deletes an edit line and the row it named.
+    ///
+    /// **Store first, and only here.** Everywhere else the journal is written first, because a
+    /// row that vanishes and then reappears on the next drain reads as the app undoing the
+    /// delete. This case is the exception because its store half is not a removal at all: the
+    /// row is dropped purely so the drain will re-derive it from the original line. That makes
+    /// a failure self-healing in this direction and *only* in this direction —
+    ///
+    ///  - the save fails: nothing has happened, the line is still in the journal, the user
+    ///    retries;
+    ///  - the save lands and the journal write then fails: the edit line survives, so the next
+    ///    drain re-ingests the original line and replays the edit, and the row comes back
+    ///    exactly as it was.
+    ///
+    /// The other order fails the one way nothing repairs. The line would already be gone, the
+    /// save would roll back, and the store would keep the edited values with no edit left in the
+    /// journal to explain them — permanently, since `ingest` skips a row it already knows and
+    /// `applyEdits` has nothing left to apply. The screen would disagree with a rebuild forever.
+    private func deleteEditLine(_ record: JournalRecord, named key: String) throws -> JournalDeletion {
+        var result = JournalDeletion()
+
+        let stored = (try? container.mainContext.fetch(FetchDescriptor<AlertEvent>())) ?? []
+        let storeOutcome = deleteStoredRows(stored.filter { $0.occurrenceKey == key })
+        result.rows = storeOutcome.rows
+        result.saveError = storeOutcome.saveError
+
+        // Refused the write, so nothing was deleted and the line stays where it is.
+        guard result.saveError == nil else { return result }
+
+        // A throw here leaves the row deleted and the line in place, which the next drain
+        // repairs by replaying the line. So the delete did not happen — say so, rather than
+        // reporting a half-state the app will quietly undo.
+        result.lines = try JournalStore.remove(from: journalURL) { $0.runID == record.runID }
+        return result
+    }
+
+    /// How many ledger rows a journal line is responsible for — for the confirmation copy.
+    ///
+    /// Read from the **store**, never by re-parsing the text. The two can disagree: a body that
+    /// parsed when it was ingested and no longer does still owns its row, because the drain
+    /// only ever adds. A confirmation that promised "nothing in the ledger changes" and then
+    /// deleted that row would be wrong in exactly the place the user is being asked to trust.
+    func rowsRecorded(by record: JournalRecord) -> Int {
+        let context = container.mainContext
+        let events = (try? context.fetch(FetchDescriptor<AlertEvent>())) ?? []
+        return events.filter { $0.runID == record.runID }.count
+    }
+
+    /// The ordinary deletion path: journal first, then the store.
+    ///
+    /// The store half is keyed on `runID` rather than on the rows handed in, so a deletion can
+    /// never leave behind a row whose journal line has gone.
+    @discardableResult
+    private func deleteInvocations(
+        runIDs: Set<UUID>,
+        orphanTxns: [Txn] = []
+    ) throws -> JournalDeletion {
+        var result = JournalDeletion()
+        guard !runIDs.isEmpty || !orphanTxns.isEmpty else { return result }
+
+        if !runIDs.isEmpty {
+            // The whole read-filter-rename runs inside `JournalStore`, under one lock hold.
+            // A throw here means the journal is untouched and so is the store.
+            result.lines = try JournalStore.remove(from: journalURL) { runIDs.contains($0.runID) }
+        }
+
+        let context = container.mainContext
+        // Fetched whole and filtered here rather than through a `#Predicate`: the journal is
+        // small, the drain already reads every event to build its occurrence set, and a
+        // predicate capturing a `Set<UUID>` is a needless fight with the macro.
+        let stored = runIDs.isEmpty
+            ? []
+            : ((try? context.fetch(FetchDescriptor<AlertEvent>())) ?? [])
+                .filter { runIDs.contains($0.runID) }
+
+        let outcome = deleteStoredRows(stored, and: orphanTxns)
+        result.rows = outcome.rows
+        result.saveError = outcome.saveError
+        return result
+    }
+
+    /// Deletes rows and saves, or rolls back so what is on screen is what is on disk.
+    ///
+    /// The one implementation of the store half, shared by both orderings above. A rollback
+    /// here always means *nothing* was deleted from the store, and the caller reports it rather
+    /// than swallowing it — a swipe whose row stays put has to look like a failure, not like the
+    /// app undoing the delete.
+    private func deleteStoredRows(
+        _ events: [AlertEvent],
+        and orphanTxns: [Txn] = []
+    ) -> (rows: Int, saveError: String?) {
+        guard !events.isEmpty || !orphanTxns.isEmpty else { return (0, nil) }
+
+        let context = container.mainContext
+        var rows = 0
+        for event in events {
+            // The event carries the relationship; deleting it cascades to its transaction.
+            context.delete(event)
+            rows += 1
+        }
+        for txn in orphanTxns {
+            context.delete(txn)
+            rows += 1
+        }
+
+        do {
+            try context.save()
+        } catch {
+            context.rollback()
+            return (0, error.localizedDescription)
+        }
+        return (rows, nil)
     }
 
     // MARK: - Diagnostics

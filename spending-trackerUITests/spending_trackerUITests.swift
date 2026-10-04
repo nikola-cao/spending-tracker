@@ -396,6 +396,65 @@ final class spending_trackerUITests: XCTestCase {
         expectBank("$85.00", of: bank, "a negative deposit should subtract from the bank")
     }
 
+    /// Deleting a line from the Raw journal, which is the only place a body that recorded no
+    /// transaction can be removed — the feed deletes rows, and that line has none.
+    ///
+    /// Everything structural about the feature is invisible to the unit tests: the `.onDelete`
+    /// wiring, resolving a swipe's offsets back to the array that was drawn, the confirmation,
+    /// and the reload that makes the line and its transaction disappear together. A screen that
+    /// compiles perfectly and does none of it passes every unit test in the target.
+    @MainActor
+    func testDeleteALineFromTheRawJournal() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        // A hand-typed alert takes the same path as a captured one, and lands in the journal.
+        app.buttons["Add manually"].tap()
+        replaceText(in: app.textFields["Merchant"], with: "UITEST JOURNAL")
+        replaceText(in: app.textFields["Amount"], with: "7.77")
+        app.buttons["Save"].tap()
+        app.buttons["Cancel"].tap()
+
+        XCTAssertTrue(app.staticTexts["UITEST JOURNAL"].waitForExistence(timeout: 5),
+                      "the charge should be in the feed before the journal is opened")
+
+        app.buttons["More"].tap()
+        let rawJournal = app.buttons["Raw journal"]
+        XCTAssertTrue(rawJournal.waitForExistence(timeout: 5))
+        rawJournal.tap()
+        XCTAssertTrue(app.navigationBars["Raw journal"].waitForExistence(timeout: 5))
+
+        // Matched on the composed body, not the merchant: the feed row behind this sheet
+        // carries the bare merchant as its own label, and a bare merchant match would pick it
+        // up and swipe something that is not on screen.
+        let line = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@",
+                        "Manual | ", "UITEST JOURNAL")
+        ).firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 5), "the line should be listed in the journal")
+        line.swipeLeft()
+
+        let swipeDelete = app.buttons["Delete"]
+        XCTAssertTrue(swipeDelete.waitForExistence(timeout: 5), "swiping should reveal Delete")
+        swipeDelete.tap()
+
+        // The confirmation is the feature, not a nicety: the journal is the app's only copy of
+        // what arrived, so the swipe alone must not destroy it.
+        XCTAssertTrue(app.staticTexts["Delete this journal line?"].waitForExistence(timeout: 5),
+                      "deleting a journal line should ask first")
+        let confirm = app.buttons["Delete line"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+        app.buttons["Done"].tap()
+
+        // And the transaction it recorded goes with it — the store is rebuilt from this file,
+        // so a row left behind would simply come back.
+        XCTAssertFalse(app.staticTexts["UITEST JOURNAL"].waitForExistence(timeout: 3),
+                       "deleting the line should take the transaction it recorded")
+    }
+
     @MainActor
     func testDiagnosticsScreenOpens() throws {
         let app = XCUIApplication()

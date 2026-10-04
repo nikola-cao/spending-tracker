@@ -168,6 +168,13 @@ A balance is an assertion about the world rather than a movement of money, which
 line of its own and not an enormous deposit. A deposit says "this arrived"; a balance says "this
 is what is there", so it wins outright over everything before it.
 
+The handover from the old `UserDefaults` value happens only when the fold derives **nothing** —
+and that is the branch that also clears it. On a device whose journal already derived a balance
+when the change landed, the old value was therefore never cleared, and deleting the last line
+that derived one would have adopted it: a balance nobody set, written into the journal, showing
+a figure from a previous version of the app. The value is now cleared whenever the fold derives
+a balance, which is the point at which it stops being adoptable at all.
+
 ### Editing a transaction
 
 Tapping a row opens the same form, filled in. Editing writes another line rather than rewriting
@@ -411,6 +418,67 @@ rename, so an interruption leaves the original intact rather than a half-written
 refuses to run at all if the store rejected the write — at that point the journal is the only
 copy of anything.
 
+### Deleting from the raw journal
+
+The feed can delete a transaction, and doing so removes its journal line too: the store is
+derived, so a row whose line survived would simply come back on the next drain.
+
+That left a gap. A body that resolved to nothing has no row, so there was nothing to swipe and
+no way to remove it — a merchant's confirmation for a purchase Amex already reported, an OTP, a
+statement notice, all of them simply sat there until the week ran out. **⋯ → Raw journal** now
+deletes them directly.
+
+Swipe a line and it asks first, because this is the app's only copy of what arrived and the
+deletion cannot be undone. What the confirmation says depends on what the line turned out to
+be, and the row count in it is read from the **store** rather than by re-parsing the text: the
+two can disagree, and a copy that promised "nothing in the ledger changes" while a row
+disappeared would be wrong in exactly the place the user is being asked to trust it.
+
+| The line | What deleting it does |
+|---|---|
+| A charge, a deposit, or a payment | Removes the transaction it recorded, and the line. A deposit or a payment also moves the Bank figure back, because the balance is folded from the journal. |
+| One message carrying two alerts | Removes both transactions. They share the line, so there is no way to remove one and keep the other. |
+| An `enter`/`result` pair from an older journal | Removes both halves. They share a `runID`, and leaving one would rebuild the row on the next drain. |
+| A `Bank` line | The Bank figure is restated from the balance and deposits or payments still in the journal. |
+| An `Edit` line | The row it changed reverts. An edit names a row rather than being one, so the row is re-derived from the original line and every edit still standing is replayed onto it. |
+| A body that recorded nothing | Just the line. Nothing in the ledger changes — and this is where the week-long recovery window is given up early. Unless the store still holds a row for it, which happens when a body an earlier parser recorded no longer reads as a movement — then that row goes too, and the confirmation says so. |
+
+The journal is written **first**, with one exception: the `Edit` line, and the reason is worth
+stating. An edit names a row rather than being one, so its store half is not a removal at all —
+the row is dropped so the drain rebuilds it from the original line. That makes a failure
+self-healing in that direction and only that one: if the save fails then nothing has happened
+and the line is still there; if the save lands and the journal write then fails, the surviving
+edit line rebuilds the row exactly as it was. The other order would leave the store holding the
+edited values with no edit left in the journal to explain them, permanently, because `ingest`
+skips a row it already knows and `applyEdits` has nothing left to apply.
+
+Everywhere else the journal goes first. If that write fails then nothing has happened and the
+delete can simply be retried; if it lands and the store refuses the save, the row is still on
+screen and the feed can finish the job. The reverse order fails the other way — a row that
+vanishes and then silently returns on the next drain, which reads as the app undoing a delete
+rather than as a failed write.
+
+#### Removing a line is one atomic step
+
+`JournalStore.remove` reads, decides and rewrites the file under a **single** lock hold. It is
+the only thing in the app that rewrites the journal.
+
+It has to be one step. `LogTransactionIntent` runs in the app's own process
+(`allowedExecutionTargets = [.main]`) and its `perform()` runs off the main actor, so an alert
+can be appended *while* a screen is deleting a line. Composing the removal from a read, a filter
+and a write takes the lock three separate times, and an alert appended in either gap is read as
+absent and then written away by the rename. That alert can be a real charge, and because the
+ledger is derived from this file, losing it loses the charge everywhere — no row, no warning,
+nothing to recover from. The retention purge had the same race with a much wider window (it
+decided from the records the drain had read at its start, a whole ingest and a save earlier),
+and now goes through the same primitive.
+
+A rewrite also **carries undecodable lines through untouched**. The file used to be rebuilt by
+re-encoding the records the current schema could decode, so any line it could not read was
+silently destroyed by any rewrite. `JournalRecord`'s own note records the day adding a field
+made every existing line undecodable — which is exactly when that would have bitten, and there
+would have been nothing left to notice it by.
+
 ## Still missing
 
 - **Statement import and reconciliation.** The plan's ledger of record, but it needs a real
@@ -613,6 +681,11 @@ xcodebuild -project spending-tracker.xcodeproj -scheme spending-tracker \
 xcodebuild -project spending-tracker.xcodeproj -scheme spending-tracker \
   -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
   -derivedDataPath ./DerivedData -only-testing:spending-trackerTests test
+
+# UI tests — a separate run, and not optional
+xcodebuild -project spending-tracker.xcodeproj -scheme spending-tracker \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
+  -derivedDataPath ./DerivedData -only-testing:spending-trackerUITests test
 ```
 
 ### Layout
