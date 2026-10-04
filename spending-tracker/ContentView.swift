@@ -394,12 +394,25 @@ private struct TxnRow: View {
             Spacer(minLength: 0)
             Text(txn.formattedAmount)
                 .font(.body.monospacedDigit())
-                // Both branches named explicitly. A bare `.primary` against a `Color` is a
-                // `HierarchicalShapeStyle` on one side and a `Color` on the other, which does
-                // not type-check — the same trap the refuted-write row hit before.
-                .foregroundStyle(txn.isMoneyIn ? Color.green : Color.primary)
+                .foregroundStyle(amountColor)
         }
         .padding(.vertical, 2)
+    }
+
+    /// Green for money arriving, red for a payment, ordinary otherwise.
+    ///
+    /// The payment arm comes first and is not a special case of the other two. `isMoneyIn` asks
+    /// the kind before the sign precisely so a payment is not green, and a payment's sign is
+    /// negative like a refund's — so a rule written the other way round would have to say
+    /// "negative, but not *that* kind of negative" and would get it wrong the moment a fourth
+    /// kind appeared.
+    ///
+    /// Every arm is named explicitly. A bare `.primary` against a `Color` is a
+    /// `HierarchicalShapeStyle` on one side and a `Color` on the other, which does not
+    /// type-check — the same trap the refuted-write row hit before.
+    private var amountColor: Color {
+        if txn.isPayment { return .red }
+        return txn.isMoneyIn ? .green : .primary
     }
 
     private var subtitle: String {

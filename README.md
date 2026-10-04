@@ -356,9 +356,11 @@ That keeps both summaries free of special cases. The bank fold takes every row t
 bank, and the spend takes everything that is not a deposit — so a payment reduces both by
 simply being summed.
 
-The sign is also why `isMoneyIn` asks the kind before the sign. A refund is green and a payment
-is not, and both are negative: the naive rule would have coloured every payment as money
-arriving.
+In the feed a payment is **red**, where money arriving is green and everything else is ordinary.
+The payment arm is checked first, and is not a special case of the other two: `isMoneyIn` asks
+the kind before the sign precisely so a payment is not green, and a payment's amount is negative
+like a refund's — so a rule written the other way round would have to say "negative, but not
+*that* kind of negative", and would get it wrong the moment a fourth kind appeared.
 
 ### Reading the email
 
