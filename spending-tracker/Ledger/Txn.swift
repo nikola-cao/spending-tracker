@@ -174,6 +174,22 @@ extension Txn {
     /// owed, a deposit is money arriving, and a payment settles what was owed.
     var isPayment: Bool { kindRaw == ParsedAlert.Kind.payment.rawValue }
 
+    /// A window of calendar months, newest first, ending with the one `date` falls in.
+    ///
+    /// The first of each month, so the values compare and dedupe cleanly and can be handed
+    /// straight to `inMonth(of:from:)`. Built by stepping the calendar back a month at a time
+    /// rather than by subtracting days, which is what keeps it correct across the short months
+    /// — March 31st minus a month is not February 31st, and the calendar knows that.
+    static func monthsEnding(with date: Date, count: Int) -> [Date] {
+        let calendar = Calendar.current
+        guard let start = calendar.date(
+            from: calendar.dateComponents([.year, .month], from: date)) else { return [] }
+
+        return (0..<max(0, count)).compactMap {
+            calendar.date(byAdding: .month, value: -$0, to: start)
+        }
+    }
+
     /// Just the rows belonging to the same calendar month as `date`.
     ///
     /// **A filter, never a deletion.** Every row stays in the store, so the month rolling over

@@ -181,6 +181,55 @@ struct FeedOrderTests {
         #expect(rows.map(\.merchant) == ["LATE", "EARLY"])
     }
 
+    // MARK: - The month window
+
+    private func labels(_ months: [Date]) -> [String] {
+        let calendar = Calendar.current
+        return months.map {
+            "\(calendar.component(.year, from: $0))-\(calendar.component(.month, from: $0))"
+        }
+    }
+
+    @Test func theWindowEndsWithTheMonthAskedFor() {
+        #expect(labels(Txn.monthsEnding(with: date(2026, 10, 3), count: 6))
+                == ["2026-10", "2026-9", "2026-8", "2026-7", "2026-6", "2026-5"])
+    }
+
+    /// Newest first, and every entry is the first of its month — which is what lets the values
+    /// be compared and deduped, and handed straight to `inMonth(of:from:)`.
+    @Test func everyMonthIsTheFirstOfItsMonth() {
+        let calendar = Calendar.current
+        let months = Txn.monthsEnding(with: date(2026, 10, 31), count: 6)
+        #expect(months.count == 6)
+        for month in months {
+            #expect(calendar.component(.day, from: month) == 1)
+        }
+    }
+
+    /// The reason this steps the calendar back a month rather than subtracting days. March 31st
+    /// minus a month is not February 31st — a day-arithmetic version skips February entirely —
+    /// and the window has to cross the year boundary too.
+    @Test func theWindowCrossesShortMonthsAndTheYearBoundary() {
+        #expect(labels(Txn.monthsEnding(with: date(2026, 3, 31), count: 6))
+                == ["2026-3", "2026-2", "2026-1", "2025-12", "2025-11", "2025-10"])
+    }
+
+    /// And it selects exactly the rows the picker says it will.
+    @Test func theWindowSelectsWhatItSays() {
+        let september = charge("SEPTEMBER", arrived: date(2026, 9, 15, 10, 0))
+        let october = charge("OCTOBER", arrived: date(2026, 10, 1, 9, 0))
+
+        let months = Txn.monthsEnding(with: date(2026, 10, 3), count: 6)
+        #expect(Txn.inMonth(of: months[0], from: [september, october]).map(\.merchant)
+                == ["OCTOBER"])
+        #expect(Txn.inMonth(of: months[1], from: [september, october]).map(\.merchant)
+                == ["SEPTEMBER"])
+    }
+
+    @Test func aWindowCanBeEmpty() {
+        #expect(Txn.monthsEnding(with: date(2026, 10, 3), count: 0).isEmpty)
+    }
+
     // MARK: - Edges
 
     @Test func anEmptyFeedStaysEmpty() {

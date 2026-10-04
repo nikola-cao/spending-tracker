@@ -80,11 +80,48 @@ final class spending_trackerUITests: XCTestCase {
         return "datePickers=\(pickers) switches=\(switches)"
     }
 
+    /// The month picker is a `.principal` toolbar item, so it *is* the title — and the
+    /// navigation bar therefore has no label of its own to match on. This looks for the button
+    /// instead, and checks it names a month.
     @MainActor
     func testLedgerIsTheFirstScreen() throws {
         let app = XCUIApplication()
         app.launch()
-        XCTAssertTrue(app.navigationBars["Spending"].waitForExistence(timeout: 10))
+
+        let title = app.buttons["Month"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        XCTAssertTrue(title.label.hasSuffix("Spending"), "saw \(title.label)")
+    }
+
+    /// The title is the month picker: tapping it offers the recent months, and choosing one
+    /// switches the whole screen — total, list and all — to that month.
+    @MainActor
+    func testTheMonthPickerSwitchesWhichMonthIsShown() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let picker = app.buttons["Month"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 10))
+
+        // Computed rather than hard-coded, so this does not start failing the moment the
+        // calendar moves on.
+        let previous = Calendar.current.date(byAdding: .month, value: -1, to: Date())!
+        let previousName = previous.formatted(.dateTime.month(.wide))
+        let previousLabel = previous.formatted(.dateTime.month(.wide).year())
+
+        picker.tap()
+
+        let option = app.buttons[previousLabel]
+        XCTAssertTrue(option.waitForExistence(timeout: 5),
+                      "\(previousLabel) should be offered, saw \(app.buttons.count) buttons")
+        option.tap()
+
+        // The title follows the selection, and names the month rather than the year.
+        let retitled = app.buttons["Month"]
+        XCTAssertTrue(retitled.waitForExistence(timeout: 5))
+        XCTAssertTrue(retitled.label.contains(previousName), "saw \(retitled.label)")
+        XCTAssertFalse(retitled.label.contains("October"),
+                       "the title should no longer be showing the current month")
     }
 
     @MainActor

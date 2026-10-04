@@ -25,17 +25,34 @@ struct ContentView: View {
     @Query(sort: [SortDescriptor(\Txn.receivedAt, order: .reverse)])
     private var transactions: [Txn]
 
-    /// The rows the feed shows: this month only, in the order the feed shows them.
+    /// Which month the whole screen is showing. Seeded to the current one, and reset to it on
+    /// every launch — looking back is something you ask for, not a state to get stuck in.
+    @State private var selectedMonth = Date()
+
+    /// The months the picker offers: this one, and the five before it.
+    private var selectableMonths: [Date] {
+        Txn.monthsEnding(with: Date(), count: 6)
+    }
+
+    /// The rows the feed shows: the selected month only, in the order the feed shows them.
     ///
     /// Both halves recompute on every render and neither is stored, so the month rolls over on
     /// the first render after midnight on the 1st — no timer, no scheduled task, and nothing to
     /// get out of step. See `Txn.inMonth` and `Txn.feedOrder`.
     private var monthTransactions: [Txn] {
-        Txn.feedOrder(Txn.inMonth(of: Date(), from: transactions))
+        Txn.feedOrder(Txn.inMonth(of: selectedMonth, from: transactions))
     }
 
     private var monthName: String {
-        Date().formatted(.dateTime.month(.wide))
+        selectedMonth.formatted(.dateTime.month(.wide))
+    }
+
+    /// Both the title and the picker's own rows read the same way, so what is selected is
+    /// word-for-word what the list below is showing.
+    private func monthLabel(_ month: Date) -> String {
+        // The year only where it is ambiguous. Within the six-month window it is ambiguous
+        // exactly once — in January, when the list runs back into December.
+        month.formatted(.dateTime.month(.wide).year())
     }
 
     /// The bank balance, mirrored from the store.
@@ -64,8 +81,38 @@ struct ContentView: View {
                 saveErrorSection
                 transactionsSection
             }
-            .navigationTitle("Spending")
+            .navigationTitle("\(monthName) Spending")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // The title itself is the picker. A `.principal` item replaces the navigation
+                // title, so the bar's own label goes with it — which is why the UI tests look
+                // for this button rather than for `navigationBars["…"]`.
+                ToolbarItem(placement: .principal) {
+                    Menu {
+                        ForEach(selectableMonths, id: \.self) { month in
+                            Button {
+                                selectedMonth = month
+                            } label: {
+                                // A checkmark rather than a disabled row, so the current choice
+                                // is visible without making it un-tappable.
+                                if Calendar.current.isDate(
+                                    month, equalTo: selectedMonth, toGranularity: .month) {
+                                    Label(monthLabel(month), systemImage: "checkmark")
+                                } else {
+                                    Text(monthLabel(month))
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("\(monthName) Spending")
+                                .font(.headline)
+                            Image(systemName: "chevron.down")
+                                .font(.caption2)
+                        }
+                    }
+                    .accessibilityIdentifier("Month")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         isShowingManualEntry = true
@@ -174,12 +221,10 @@ struct ContentView: View {
             .reduce(0) { $0 + $1.amountMinor }
     }
 
-    private var monthSpend: (total: String, name: String) {
-        (
-            total: formatted(monthSpendMinor),
-            name: Date().formatted(.dateTime.month(.wide).year())
-        )
-    }
+    /// No month in the name any more. The section header that carried it is gone — the title at
+    /// the top of the screen says which month this is, and saying it twice within two inches
+    /// was the whole complaint.
+    private var monthSpend: String { formatted(monthSpendMinor) }
 
     private var formattedBankBalance: String { formatted(bankBalanceMinor) }
 
@@ -207,10 +252,9 @@ struct ContentView: View {
     /// The type is one step down from the two-figure version. Three currency strings do not fit
     /// across an iPhone at `.title`, and shrinking all three is better than shrinking one.
     private var totalSpendSection: some View {
-        let spend = monthSpend
-        return Section {
+        Section {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                summaryFigure(title: "Balance", value: spend.total, alignment: .leading)
+                summaryFigure(title: "Balance", value: monthSpend, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 // The bank balance is the only figure that can be edited, so it is the only one
@@ -231,8 +275,6 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.vertical, 4)
-        } header: {
-            Text(spend.name)
         }
     }
 
@@ -307,12 +349,12 @@ struct ContentView: View {
         refresh()
     }
 
-    /// The month is named here as well as above the total, because this list is no longer
-    /// "everything ever" — an unlabelled count with older rows in the store would read as
-    /// missing data rather than as a month.
+    /// The count alone. It used to name the month too, back when the month was only stated
+    /// above the total and this list could otherwise read as "everything ever" — the title
+    /// says it now, directly above.
     private var transactionsHeader: String {
         let noun = monthTransactions.count == 1 ? "transaction" : "transactions"
-        return "\(monthName) · \(monthTransactions.count) \(noun)"
+        return "\(monthTransactions.count) \(noun)"
     }
 
     /// Kept distinct from the genuinely-empty case. An empty month with a full store behind it
