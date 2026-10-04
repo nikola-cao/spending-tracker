@@ -24,11 +24,13 @@ nonisolated struct ParsedAlert: Sendable, Equatable {
     enum Kind: String, Sendable {
         case charge
         case deposit
+        /// Paying a card off. Its own kind rather than a large deposit, because it is the one
+        /// movement that comes off the *spend* as well as the bank — see `affectsSpend`.
+        case payment
         case unrecognizedVerb
 
-        /// Whether this kind becomes a ledger row. Both a charge and a deposit do; an
-        /// unrecognised verb does not.
-        var isLedgerEntry: Bool { self == .charge || self == .deposit }
+        /// Whether this kind becomes a ledger row. Everything but an unrecognised verb does.
+        var isLedgerEntry: Bool { self != .unrecognizedVerb }
     }
 
     let kind: Kind
@@ -72,6 +74,21 @@ nonisolated struct ParsedAlert: Sendable, Equatable {
     var isCharge: Bool { kind == .charge }
 
     var isDeposit: Bool { kind == .deposit }
+
+    var isPayment: Bool { kind == .payment }
+
+    /// Whether this moves the bank balance.
+    ///
+    /// A charge never does — it is owed on a card, not yet paid for. A payment does, because
+    /// it is the money actually leaving the bank to settle one.
+    var affectsBank: Bool { kind == .deposit || kind == .payment }
+
+    /// Whether this counts against the month's spend.
+    ///
+    /// A deposit does not: a Zelle received is not a negative cost. A payment does, because it
+    /// settles spending that already happened — which is why it *reduces* the figure rather
+    /// than adding to it, and why it is stored as a negative amount.
+    var affectsSpend: Bool { kind != .deposit }
 
     /// Whether this alert becomes a ledger row.
     ///

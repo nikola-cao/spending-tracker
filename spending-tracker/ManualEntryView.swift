@@ -36,12 +36,15 @@ struct ManualEntryView: View {
         self.editing = editing
         self.onRecorded = onRecorded
 
-        _kind = State(initialValue: editing?.isDeposit == true ? .deposit : .charge)
+        _kind = State(initialValue: Self.kind(of: editing))
         _merchant = State(initialValue: editing?.merchant ?? "")
         // The canonical decimal, so the field shows what is actually stored rather than
-        // whatever happened to be typed when it was first entered.
-        _amount = State(
-            initialValue: editing.map { Money.decimalString(fromMinor: $0.amountMinor) } ?? "")
+        // whatever happened to be typed when it was first entered. A payment is shown as the
+        // amount paid rather than as its effect, so the field reads the same whether the
+        // payment is being added or edited.
+        _amount = State(initialValue: editing.map {
+            Money.decimalString(fromMinor: $0.isPayment ? -$0.amountMinor : $0.amountMinor)
+        } ?? "")
 
         // Off when the row has no date of its own. A Fidelity row's `occurredAt` is its
         // arrival, and showing that in the picker would present a time the message never
@@ -49,6 +52,17 @@ struct ManualEntryView: View {
         _hasDate = State(initialValue: editing?.occurredAtIsFromMessage ?? true)
         _date = State(initialValue: editing?.occurredAt ?? Date())
         _cardSuffix = State(initialValue: editing?.cardSuffix ?? "")
+    }
+
+    /// Which tab a row belongs on.
+    ///
+    /// Read from the row rather than passed in, so the two can never disagree — and read in
+    /// this order, because a payment is neither of the other two and treating it as a deposit
+    /// would put its amount on the wrong side of the bank.
+    private static func kind(of txn: Txn?) -> Kind {
+        guard let txn else { return .charge }
+        if txn.isPayment { return .payment }
+        return txn.isDeposit ? .deposit : .charge
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -61,6 +75,9 @@ struct ManualEntryView: View {
     private enum Kind: String, CaseIterable, Identifiable {
         case charge
         case deposit
+        /// Paying a card off. Entered as the amount paid and stored negated, because its
+        /// effect — on the spend and on the bank — is to take that much away.
+        case payment
 
         var id: String { rawValue }
 
@@ -68,8 +85,22 @@ struct ManualEntryView: View {
             switch self {
             case .charge: return "Charge"
             case .deposit: return "Deposit"
+            case .payment: return "Payment"
             }
         }
+
+        /// What this line is called in the journal and the ledger.
+        var entryKind: ParsedAlert.Kind {
+            switch self {
+            case .charge: return .charge
+            case .deposit: return .deposit
+            case .payment: return .payment
+            }
+        }
+
+        /// Whether the amount is stored as typed. A payment is not: the number a person enters
+        /// is what they paid, and what the ledger needs is what it took away.
+        var storesNegated: Bool { self == .payment }
     }
 
     // Seeded by the initialiser, which is why none of them carries a default here.
@@ -120,7 +151,7 @@ struct ManualEntryView: View {
 
     private var title: String {
         guard editing != nil else { return "Add manually" }
-        return kind == .charge ? "Edit charge" : "Edit deposit"
+        return "Edit \(kind.title.lowercased())"
     }
 
     @ViewBuilder
@@ -172,7 +203,7 @@ struct ManualEntryView: View {
     private var detailsDateLabel: String {
         switch kind {
         case .charge: return "Set a purchase date"
-        case .deposit: return "Set a date"
+        case .deposit, .payment: return "Set a date"
         }
     }
 
@@ -183,6 +214,8 @@ struct ManualEntryView: View {
         case .deposit:
             return "Shows up in the transactions and moves the bank balance. Type a minus to "
                 + "subtract it from the bank instead."
+        case .payment:
+            return "Paying a card off. Comes off both the balance and the bank."
         }
     }
 
@@ -300,7 +333,7 @@ struct ManualEntryView: View {
 
         switch kind {
         case .charge: saveCharge(minor)
-        case .deposit: saveDeposit(minor)
+        case .deposit, .payment: saveNonCharge(minor)
         }
 
         // Only cleared when adding. An edit is about the row behind it, and blanking the form
@@ -313,11 +346,11 @@ struct ManualEntryView: View {
 
     /// Appends a line that supersedes the row's original one. See `LedgerStore.edit`.
     private func saveEdit(_ txn: Txn, _ minor: Int) {
-        // A deposit has no card, so it is never sent one — the parser refuses a deposit line
-        // that names a card, and it would refuse this too if the field were carried across.
-        let card = txn.isDeposit ? "" : trimmedCard
+        // Only a charge has a card, so the other kinds are never sent one — the parser refuses
+        // a line that names a card on either of them.
+        let card = txn.isDeposit || txn.isPayment ? "" : trimmedCard
 
-        if !txn.isDeposit,
+        if !txn.isDeposit, !txn.isPayment,
            !card.isEmpty,
            !ManualEntryParser.isValidCardSuffix(card) {
             outcome = .failed("Card must be \(ManualEntryParser.minimumCardDigits) to "
@@ -327,10 +360,15 @@ struct ManualEntryView: View {
         }
 
         do {
+            // A payment is stored as its effect, so the field's figure is negated on the way
+            // back in — the same rule the add path uses, and the reason the form reopens on the
+            // amount paid rather than on the negative the row holds.
+            let stored = txn.isPayment ? -minor : minor
+
             try ledger.edit(
                 txn,
                 merchant: trimmedMerchant,
-                amount: Money.decimalString(fromMinor: minor),
+                amount: Money.decimalString(fromMinor: stored),
                 date: hasDate ? date : nil,
                 cardSuffix: card
             )
@@ -348,6 +386,7 @@ struct ManualEntryView: View {
         switch kind {
         case .charge: return "Enter an amount like 12.34, or -12.34 for a refund"
         case .deposit: return "Enter an amount like 500, or -40 for money going out"
+        case .payment: return "Enter the amount you paid, like 825.77"
         }
     }
 
@@ -366,18 +405,32 @@ struct ManualEntryView: View {
         outcome = .recorded(summary: "Recorded \(formatted(minor)) at \(trimmedMerchant)")
     }
 
-    /// A deposit is journalled exactly like a charge, and the bank follows from that.
+    /// A deposit or a payment is journalled exactly like a charge, and everything else follows.
     ///
-    /// Nothing here adjusts the balance. It is folded from the journal — the last value set,
-    /// plus every deposit after it — so writing the line *is* moving the money, and a line that
-    /// failed to be written cannot leave the bank changed with nothing to account for it.
-    private func saveDeposit(_ minor: Int) {
-        guard journal(kind: .deposit, minor: minor, cardSuffix: "") else { return }
+    /// Nothing here adjusts the balance or the bank. Both are folded from the journal, so
+    /// writing the line *is* moving the money, and a line that failed to be written cannot
+    /// leave anything changed with nothing to account for it.
+    ///
+    /// A payment is stored negated: the number typed is what was paid, and what the ledger
+    /// needs is what it took away. Entering a minus reverses that, which is a payment coming
+    /// back — a rare thing, but the same rule covers it without a special case.
+    private func saveNonCharge(_ minor: Int) {
+        let stored = kind.storesNegated ? -minor : minor
+        guard journal(kind: kind.entryKind, minor: stored, cardSuffix: "") else { return }
 
         ledger.drain()
         onRecorded()
-        outcome = .recorded(summary: "\(verb(for: minor)) \(formatted(magnitude(of: minor)))"
-                            + " — bank now \(formatted(ledger.bankBalanceMinor))")
+
+        if kind == .payment {
+            // The bank, not the balance. Both came down, but the balance is the month's figure
+            // and is not the parser's to state; the bank is the one folded from the journal.
+            outcome = .recorded(
+                summary: "Paid \(formatted(magnitude(of: minor)))"
+                    + " — bank now \(formatted(ledger.bankBalanceMinor))")
+        } else {
+            outcome = .recorded(summary: "\(verb(for: minor)) \(formatted(magnitude(of: minor)))"
+                                + " — bank now \(formatted(ledger.bankBalanceMinor))")
+        }
     }
 
     /// Writes the canonical line, reporting rather than throwing so both callers stay flat.

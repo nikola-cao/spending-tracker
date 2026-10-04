@@ -247,6 +247,52 @@ struct ManualEntryParserTests {
         #expect(Money.minorUnits(from: c.1) == c.0)
     }
 
+    // MARK: - Payments
+
+    private func paymentLine(merchant: String, amount: String, date: Date? = nil) -> String {
+        ManualEntryParser.compose(
+            kind: .payment, merchant: merchant, amount: amount, date: date, cardSuffix: "")
+    }
+
+    /// A payment is stored as its effect, so the line carries a negative amount even though the
+    /// figure a person types is what they paid.
+    @Test func aPaymentRoundTripsWithItsStoredSign() throws {
+        let alert = try #require(
+            ManualEntryParser.parseFirst(paymentLine(merchant: "AMEX PAYMENT", amount: "-825.77")))
+
+        #expect(alert.isPayment)
+        #expect(!alert.isDeposit)
+        #expect(!alert.isCharge)
+        #expect(alert.amountMinor == -82_577)
+        #expect(alert.merchant == "AMEX PAYMENT")
+        #expect(alert.cardSuffix.isEmpty)
+    }
+
+    /// A payment has no card, the same as a deposit — so a line naming one is malformed rather
+    /// than something to quietly drop.
+    @Test func aPaymentLineNamingACardIsRejected() {
+        #expect(ManualEntryParser.parseAll(
+            "Manual | payment | -825.77 | 2026-10-03 | 21006 | AMEX PAYMENT").isEmpty)
+    }
+
+    /// The three kinds are told apart by the field, and only one of them takes a card.
+    @Test func theThreeKindsAreDistinct() throws {
+        #expect(try #require(
+            ManualEntryParser.parseFirst(chargeLine(
+                merchant: "X", amount: "1.00", date: nil, cardSuffix: "7224"))).isCharge)
+        #expect(try #require(
+            ManualEntryParser.parseFirst(depositLine(merchant: "X", amount: "1.00"))).isDeposit)
+        #expect(try #require(
+            ManualEntryParser.parseFirst(paymentLine(merchant: "X", amount: "-1.00"))).isPayment)
+    }
+
+    @Test func theLedgerEntryKindsAllCount() {
+        #expect(ParsedAlert.Kind.charge.isLedgerEntry)
+        #expect(ParsedAlert.Kind.deposit.isLedgerEntry)
+        #expect(ParsedAlert.Kind.payment.isLedgerEntry)
+        #expect(!ParsedAlert.Kind.unrecognizedVerb.isLedgerEntry)
+    }
+
     // MARK: - The older shape
 
     /// The journal is append-only, so lines written before the kind field existed have to keep

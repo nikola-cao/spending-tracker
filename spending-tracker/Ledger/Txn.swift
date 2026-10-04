@@ -153,13 +153,26 @@ extension Txn {
     /// back, so both come out true — but a deposit can be negative, and that is money leaving
     /// the bank. Colouring it as money-in because it happens to be a deposit would say the
     /// opposite of what it means.
-    var isMoneyIn: Bool { isDeposit ? amountMinor > 0 : amountMinor < 0 }
+    ///
+    /// A payment is never money in, whatever its sign. It can only be money going out to settle
+    /// a card — and since it is stored negative, the naive rule would have coloured every
+    /// payment green.
+    var isMoneyIn: Bool {
+        if isPayment { return false }
+        return isDeposit ? amountMinor > 0 : amountMinor < 0
+    }
 
     /// True when this row is money moving in or out of the bank rather than a card charge.
     ///
     /// The distinction the two kinds exist for. Anything counting *spending* has to ask — the
     /// month total does — while the feed shows both, because both are things that happened.
     var isDeposit: Bool { kindRaw == ParsedAlert.Kind.deposit.rawValue }
+
+    /// True when this row is a card being paid off.
+    ///
+    /// The third kind, and the only one that comes off the spend *and* the bank: a charge is
+    /// owed, a deposit is money arriving, and a payment settles what was owed.
+    var isPayment: Bool { kindRaw == ParsedAlert.Kind.payment.rawValue }
 
     /// Just the rows belonging to the same calendar month as `date`.
     ///

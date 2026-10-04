@@ -47,6 +47,23 @@ struct TxnTests {
         #expect(!row(0, kind: .charge).isMoneyIn)
     }
 
+    /// A payment is never money in, however it is signed.
+    ///
+    /// This is the trap the negative storage sets: a payment is stored as its effect, so its
+    /// amount is negative — and the rule that makes a refund green would have made every
+    /// payment green too.
+    @Test func aPaymentIsNeverMoneyIn() {
+        #expect(!row(-82_577, kind: .payment).isMoneyIn)
+        #expect(!row(82_577, kind: .payment).isMoneyIn)
+    }
+
+    @Test func aPaymentIsItsOwnKind() {
+        #expect(row(-100, kind: .payment).isPayment)
+        #expect(!row(-100, kind: .payment).isDeposit)
+        #expect(!row(-100, kind: .payment).isMoneyIn)
+        #expect(!row(100, kind: .charge).isPayment)
+    }
+
     /// The kind is stored as the raw string the journal writes, so a row read back from disk
     /// has to answer the same way one just built in memory does.
     @Test func theKindSurvivesBeingStoredAsItsRawValue() {

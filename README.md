@@ -336,6 +336,35 @@ does not say where the cents begin and the readings are different amounts.
 The run can only begin on a `$` line, and whatever is joined still has to survive the strict
 currency parser, which is what makes a permissive fragment test safe.
 
+## Payments
+
+> **A fourth kind (2026-10-03).** Paying a card off. Manual entry only so far — see below.
+
+A payment is its own kind, not a large deposit, because it is the one movement that comes off
+**both** figures: **Balance**, because it settles spending that already happened, and **Bank**,
+because the money left it.
+
+It is stored as its **effect**, so the amount is negative even though the figure a person types
+is what they paid:
+
+```
+Manual | payment | -825.77 | 2026-10-03 |  | AMEX PAYMENT
+```
+
+That keeps both summaries free of special cases. The bank fold takes every row that affects the
+bank, and the spend takes everything that is not a deposit — so a payment reduces both by
+simply being summed.
+
+The sign is also why `isMoneyIn` asks the kind before the sign. A refund is green and a payment
+is not, and both are negative: the naive rule would have coloured every payment as money
+arriving.
+
+**Not done yet: the email.** Amex's "We've received your payment" notification is not parsed.
+The samples provided were Gmail *inbox* dumps rather than the email bodies, and the listing
+snippet for this email carries no amount at all — so there is no figure to record. Everything
+else is in place for it: a parser only has to emit `.payment` with a negative amount and the
+rest follows.
+
 ## Only real movements of money reach the ledger
 
 A body that resolves to nothing — a merchant's own confirmation email for a purchase Amex

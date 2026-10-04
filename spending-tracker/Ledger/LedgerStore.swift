@@ -176,10 +176,11 @@ final class LedgerStore {
             case .edit?:
                 continue
             case nil:
-                // Not an instruction, so it is an alert — and only a deposit moves the bank.
-                // A charge never touches it.
+                // Not an instruction, so it is an alert. A charge never touches the bank — it
+                // is owed on a card, not yet paid for — but a deposit and a payment both do,
+                // and both are stored already signed by the direction the money went.
                 for (index, alert) in AlertParsers.parseAll(line.body).enumerated()
-                where alert.isDeposit {
+                where alert.affectsBank {
                     // Keyed exactly as the ingest keys it, so an edit reaches the right line.
                     // An edit naming a charge simply never matches anything here.
                     let key = "\(line.runID.uuidString)#\(index)"

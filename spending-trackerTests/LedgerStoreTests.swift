@@ -794,6 +794,41 @@ struct LedgerStoreTests {
         #expect(ledger.bankBalanceMinor == 12_500)
     }
 
+    // MARK: - Payments
+
+    /// A payment is the one movement that comes off both figures: the bank, because the money
+    /// left it, and the month's spend, because it settles charges already counted there.
+    @Test func aPaymentComesOffTheBank() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.setBankBalance(200_000)
+
+        try ledger.appendManual(
+            kind: .payment, merchant: "AMEX PAYMENT", amount: "-825.77", date: nil, cardSuffix: "")
+        ledger.drain()
+
+        #expect(ledger.bankBalanceMinor == 200_000 - 82_577)
+
+        let rows = txns(container)
+        #expect(rows.count == 1)
+        let row = try #require(rows.first)
+        #expect(row.isPayment)
+        #expect(row.amountMinor == -82_577)
+        #expect(!row.isMoneyIn, "a payment is money going out, so never green")
+        // Which is also what puts it in the month's spend: the total sums everything that is
+        // not a deposit, and a payment stored negative reduces it without a special case.
+        #expect(!row.isDeposit)
+    }
+
+    /// A charge still leaves the bank alone. The distinction the three kinds exist for.
+    @Test func aChargeDoesNotTouchTheBank() throws {
+        let (ledger, _, url) = try makeStore()
+        try ledger.setBankBalance(200_000)
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+
+        #expect(ledger.bankBalanceMinor == 200_000)
+    }
+
     // MARK: - Venmo
 
     /// A Venmo payment becomes an ordinary deposit: a row in the feed, and a move to the bank

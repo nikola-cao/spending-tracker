@@ -164,6 +164,10 @@ struct ContentView: View {
     /// not a negative cost — folding it in would make a month of heavy spending look cheap
     /// because someone paid you back for rent. Refunds are a different thing and are not
     /// excluded: a negative charge is money the card gave back on spending that did happen.
+    ///
+    /// Payments are included, and that is the whole reason they are their own kind. A payment
+    /// settles spending that already happened, so it comes off this figure — and it is stored
+    /// negative precisely so that summing the month works here without a special case.
     private var monthSpendMinor: Int {
         monthTransactions
             .filter { !$0.isDeposit }
@@ -377,7 +381,9 @@ private struct TxnRow: View {
         // Where the money moved, if anywhere. A charge may have no card at all — a hand-entered
         // one where the card was left blank — and a deposit never has one, so the bullet is
         // omitted rather than shown with nothing after it.
-        if txn.isDeposit {
+        if txn.isPayment {
+            parts.append("Payment")
+        } else if txn.isDeposit {
             parts.append("Deposit")
         } else if !txn.cardSuffix.isEmpty {
             parts.append("••\(txn.cardSuffix)")

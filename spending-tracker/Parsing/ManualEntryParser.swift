@@ -148,12 +148,12 @@ nonisolated enum ManualEntryParser {
         }
 
         let cardSuffix = parts[3 + shift]
-        if kind == .deposit {
-            // A deposit has no card, so a line that names one is malformed rather than
-            // something to quietly drop.
-            guard cardSuffix.isEmpty else { return nil }
-        } else {
+        if kind == .charge {
             guard cardSuffix.isEmpty || isValidCardSuffix(cardSuffix) else { return nil }
+        } else {
+            // A deposit and a payment both have no card, so a line naming one is malformed
+            // rather than something to quietly drop.
+            guard cardSuffix.isEmpty else { return nil }
         }
 
         return ParsedAlert(
