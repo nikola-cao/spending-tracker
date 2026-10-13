@@ -29,6 +29,17 @@ struct ContentView: View {
     /// every launch — looking back is something you ask for, not a state to get stuck in.
     @State private var selectedMonth = Date()
 
+    /// Which category the list is narrowed to. `nil` is every category.
+    ///
+    /// View state, like `selectedMonth`, and never stored: which slice of the feed you are
+    /// looking at is not a fact about your money, and a filter that survived a relaunch would
+    /// make the screen open on a partial month with nothing on it saying so.
+    ///
+    /// `""` is **Uncategorized**, which is a real choice rather than the absence of one — the
+    /// rows the classifier has not answered for yet. Held as the token the row carries rather
+    /// than as an enum, so it agrees with the journal by construction.
+    @State private var categoryFilter: String?
+
     /// The months the picker offers: this one, and the five before it.
     private var selectableMonths: [Date] {
         Txn.monthsEnding(with: Date(), count: 6)
@@ -41,6 +52,51 @@ struct ContentView: View {
     /// get out of step. See `Txn.inMonth` and `Txn.feedOrder`.
     private var monthTransactions: [Txn] {
         Txn.feedOrder(Txn.inMonth(of: selectedMonth, from: transactions))
+    }
+
+    /// The rows the list draws: the month's, narrowed to one category.
+    ///
+    /// Filtered here rather than in the `@Query`, for the same reason the month is — a predicate
+    /// would have to be rebuilt every time the choice changed, and the ordering has to be applied
+    /// in Swift anyway.
+    ///
+    /// **The three figures at the top deliberately do not read this.** They read
+    /// `monthTransactions`, so choosing a category cannot restate Balance, Bank or Remaining: a
+    /// Balance narrowed to dining sitting above an unfiltered Bank would make Remaining mean
+    /// nothing at all. What one category cost is answered by the subtotal in the list's own
+    /// header, which is the figure that is honestly about the rows below it.
+    ///
+    /// A payment or a deposit matches no category, **Uncategorized included**. Those rows are not
+    /// awaiting an answer — the question does not apply to them — so sweeping them into the
+    /// uncategorized pile would make that pile mean two different things at once.
+    private var feedRows: [Txn] {
+        guard let categoryFilter else { return monthTransactions }
+        return monthTransactions.filter {
+            $0.isCategorizable && $0.categoryRaw == categoryFilter
+        }
+    }
+
+    /// What the filtered rows add up to, by the same rule the month's Balance uses: deposits are
+    /// not a cost, and a payment is a negative one.
+    private var filteredSubtotal: String {
+        formatted(feedRows.filter { !$0.isDeposit }.reduce(0) { $0 + $1.amountMinor })
+    }
+
+    /// A checkmark rather than a disabled row, matching the month picker above it, so the
+    /// current choice is visible without making it un-tappable.
+    @ViewBuilder
+    private func filterChoice(_ title: String, isOn: Bool) -> some View {
+        if isOn {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
+        }
+    }
+
+    /// What the filter is currently showing, for the menu.
+    private var filterLabel: String {
+        guard let categoryFilter else { return "All categories" }
+        return categoryFilter.isEmpty ? "Uncategorized" : SpendingCategory.displayName(for: categoryFilter)
     }
 
     private var monthName: String {
@@ -131,6 +187,38 @@ struct ContentView: View {
                     } label: {
                         Label("Add manually", systemImage: "plus")
                     }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            categoryFilter = nil
+                        } label: {
+                            filterChoice("All categories", isOn: categoryFilter == nil)
+                        }
+                        Button {
+                            categoryFilter = ""
+                        } label: {
+                            filterChoice("Uncategorized", isOn: categoryFilter == "")
+                        }
+                        Divider()
+                        ForEach(SpendingCategory.all, id: \.self) { token in
+                            Button {
+                                categoryFilter = token
+                            } label: {
+                                filterChoice(SpendingCategory.displayName(for: token),
+                                             isOn: categoryFilter == token)
+                            }
+                        }
+                    } label: {
+                        // Filled while a filter is on. A list silently showing a third of the
+                        // month is the one state that has to be visible from the toolbar, since
+                        // nothing else on the screen would say the rest of it exists.
+                        Label("Filter", systemImage: categoryFilter == nil
+                            ? "line.3.horizontal.decrease.circle"
+                            : "line.3.horizontal.decrease.circle.fill")
+                    }
+                    .accessibilityIdentifier("Category filter")
+                    .accessibilityValue(filterLabel)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -372,7 +460,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var transactionsSection: some View {
-        if monthTransactions.isEmpty {
+        if feedRows.isEmpty {
             Section {
                 ContentUnavailableView {
                     Label(emptyTitle, systemImage: "creditcard")
@@ -383,8 +471,8 @@ struct ContentView: View {
         } else {
             // Bound once and used for both the rows and the offsets, so a swipe can only ever
             // resolve against the array that was actually drawn. Two evaluations of
-            // `monthTransactions` could disagree, and then the swipe deletes the wrong row.
-            let rows = monthTransactions
+            // `feedRows` could disagree, and then the swipe deletes the wrong row.
+            let rows = feedRows
             Section {
                 ForEach(rows) { txn in
                     TxnRow(txn: txn)
@@ -437,18 +525,36 @@ struct ContentView: View {
     /// above the total and this list could otherwise read as "everything ever" — the title
     /// says it now, directly above.
     private var transactionsHeader: String {
-        let noun = monthTransactions.count == 1 ? "transaction" : "transactions"
-        return "\(monthTransactions.count) \(noun)"
+        let noun = feedRows.count == 1 ? "transaction" : "transactions"
+        let count = "\(feedRows.count) \(noun)"
+        // Only while a filter is on. The subtotal is the honest answer to "what did dining cost
+        // this month", and it belongs on the rows it is about rather than on the three figures
+        // at the top, which stay a statement about the whole month whatever is being shown.
+        return categoryFilter == nil ? count : "\(count) · \(filteredSubtotal)"
     }
 
     /// Kept distinct from the genuinely-empty case. An empty month with a full store behind it
     /// saying "no transactions yet" would look like everything had been thrown away — and this
     /// is exactly the moment the month rolls over, when it would be wrong.
+    ///
+    /// A third case now, for the same reason: an empty *filter* over a month that is full. Left
+    /// to fall through it would say "Nothing in October yet" about a month with thirty
+    /// transactions in it, which reads as the app having lost them.
     private var emptyTitle: String {
-        transactions.isEmpty ? "No transactions yet" : "Nothing in \(monthName) yet"
+        if categoryFilter != nil, !monthTransactions.isEmpty {
+            return categoryFilter == ""
+                ? "Nothing uncategorized in \(monthName)"
+                : "Nothing in \(filterLabel) in \(monthName)"
+        }
+        return transactions.isEmpty ? "No transactions yet" : "Nothing in \(monthName) yet"
     }
 
     private var emptyMessage: String {
+        if categoryFilter != nil, !monthTransactions.isEmpty {
+            let noun = monthTransactions.count == 1 ? "transaction" : "transactions"
+            return "\(monthName) has \(monthTransactions.count) \(noun), and none of them are "
+                + "in this category. The filter is hiding them, not a month with nothing in it."
+        }
         if transactions.isEmpty {
             return "Alerts captured by the automation, and anything you add by hand, will "
                 + "appear here."
@@ -528,6 +634,15 @@ private struct TxnRow: View {
             parts.append("••\(txn.cardSuffix)")
         }
         parts.append("\(label) \(when)")
+        // What it is filed under, next to where the money moved rather than buried at the end
+        // beside the date — it is the attribute the list is scanned for.
+        //
+        // Only a charge shows anything here, and a charge with no category says so in words.
+        // A payment or a deposit shows nothing at all rather than "Uncategorized": they are not
+        // waiting on an answer, and printing one would suggest the app had failed to give it.
+        if txn.isCategorizable {
+            parts.append(txn.hasCategory ? txn.categoryName : "Uncategorized")
+        }
         if txn.possibleDuplicate { parts.append("possible duplicate") }
         return parts.joined(separator: " · ")
     }
@@ -788,6 +903,11 @@ struct JournalView: View {
             return "Card balance line deleted. The Balance figure is restated from what is left."
         case .instruction(.edit):
             return "Edit line deleted. The row it changed reads as the original line said."
+        case .instruction(.category):
+            return "Category line deleted. That transaction takes whatever else applies to its merchant."
+        case .instruction(.merchantCategory(let rule)):
+            return "Merchant rule deleted. Everything from \"\(rule.merchant)\" falls back to "
+                + "whatever else applies, and that merchant can be asked about again."
         case .movement where rows > 1:
             return "Line deleted, with all \(rows) transactions it recorded."
         case .movement:

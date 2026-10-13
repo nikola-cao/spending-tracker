@@ -52,7 +52,21 @@ struct ManualEntryView: View {
         _hasDate = State(initialValue: editing?.occurredAtIsFromMessage ?? true)
         _date = State(initialValue: editing?.occurredAt ?? Date())
         _cardSuffix = State(initialValue: editing?.cardSuffix ?? "")
+
+        // The row's *effective* category, which is what the drain already resolved onto it —
+        // whether that came from a line about this row, a rule about its merchant, or nothing.
+        self.originalCategory = editing?.categoryRaw ?? ""
+        _category = State(initialValue: editing?.categoryRaw ?? "")
     }
+
+    /// The category the row had when the form opened.
+    ///
+    /// Kept so that saving an unrelated change — an amount, a date — does not write a category
+    /// line nobody asked for. Without it, editing the amount of a row that follows its merchant's
+    /// rule would quietly convert that into a decision about this one transaction, and the row
+    /// would stop following the rule from then on. A form that changes less than it is asked to
+    /// is the kind of thing nobody notices until it matters.
+    private let originalCategory: String
 
     /// Which tab a row belongs on.
     ///
@@ -113,6 +127,13 @@ struct ManualEntryView: View {
     @State private var hasDate: Bool
     @State private var date: Date
     @State private var cardSuffix: String
+    /// The category token, or `""` for none. `""` is a real choice, not an empty field: it means
+    /// this row is filed under nothing and no rule for its merchant may put one back.
+    @State private var category: String
+    /// Whether the chosen category should also become the rule for this merchant, now and in
+    /// future. Off by default: a one-off correction is the common act, and a toggle that was
+    /// already on is how a single mistake silently rewrites a merchant's whole history.
+    @State private var rememberForMerchant = false
     @State private var knownCards: [String] = []
     @State private var outcome: Outcome?
 
@@ -129,6 +150,7 @@ struct ManualEntryView: View {
                 // Absent rather than shown empty: a deposit has no card, and an empty card
                 // field would invite someone to fill it in.
                 if kind == .charge { cardSection }
+                categorySection
                 outcomeSection
 
                 Section {
@@ -262,6 +284,62 @@ struct ManualEntryView: View {
         return text
     }
 
+    /// Changing a row's category, and optionally every row from its merchant.
+    ///
+    /// **Only when editing, and only on a charge.** Adding is excluded because a category line
+    /// has to name a row that already exists, and the row a manual entry produces does not exist
+    /// until the drain has run. A payment or a deposit is excluded because it is not
+    /// *uncategorized* — it is not categorizable: filing a card payoff under Dining would make
+    /// that figure a lie, so the picker is not offered where the answer would be refused.
+    @ViewBuilder
+    private var categorySection: some View {
+        if let editing, editing.isCategorizable {
+            Section {
+                Picker("Category", selection: $category) {
+                    Text("None").tag("")
+                    ForEach(SpendingCategory.all, id: \.self) { token in
+                        Text(SpendingCategory.displayName(for: token)).tag(token)
+                    }
+                }
+                // A menu, explicitly. Left to the default this is a navigation link inside a
+                // form, which pushes a whole screen for six taps' worth of choice — and the
+                // style is inferred from context, so it would change under a future layout.
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("Category")
+                // Offered only once there is something to remember. "Remember that this
+                // merchant has no category" is a different act from clearing one row, and the
+                // journal has no line for it — clearing a rule is deleting it from the Raw
+                // journal, which is deliberate because it puts every row back in the queue.
+                if !category.isEmpty {
+                    Toggle(rememberLabel, isOn: $rememberForMerchant)
+                }
+            } header: {
+                Text("Category")
+            } footer: {
+                Text(categoryFooter)
+            }
+        }
+    }
+
+    private var displayMerchant: String {
+        trimmedMerchant.isEmpty ? "this merchant" : trimmedMerchant
+    }
+
+    private var rememberLabel: String { "Remember for \(displayMerchant)" }
+
+    private var categoryFooter: String {
+        if category.isEmpty {
+            return "No category. This row stays out of every category — including any rule "
+                + "there is for \(displayMerchant)."
+        }
+        if rememberForMerchant {
+            return "Every transaction from \(displayMerchant) gets this, now and in the future. "
+                + "Rows you have filed individually keep their own."
+        }
+        return "Applies to this transaction only. Turn on Remember to file everything from "
+            + "\(displayMerchant) the same way."
+    }
+
     @ViewBuilder
     private var outcomeSection: some View {
         switch outcome {
@@ -373,6 +451,21 @@ struct ManualEntryView: View {
                 date: hasDate ? date : nil,
                 cardSuffix: card
             )
+
+            // Written only when it actually changed, so saving an amount leaves a row following
+            // its merchant's rule rather than freezing it to today's answer. An empty label is
+            // written as an explicit clear rather than skipped — see `LedgerStore.setCategory`.
+            if category != originalCategory {
+                try ledger.setCategory(txn, label: category.isEmpty ? nil : category)
+            }
+
+            // The row's own line is written too, above, even when the rule now says the same
+            // thing. Both are needed: the rule covers every other row from this merchant, and
+            // the line covers *this* one, which may already have carried a different category
+            // that no amount of rewriting a rule could dislodge — specificity wins.
+            if rememberForMerchant, !category.isEmpty {
+                try ledger.setMerchantRule(merchant: trimmedMerchant, label: category)
+            }
         } catch {
             outcome = .failed(error.localizedDescription)
             return

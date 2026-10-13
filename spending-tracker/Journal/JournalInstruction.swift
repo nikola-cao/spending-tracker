@@ -56,6 +56,29 @@ nonisolated enum JournalInstruction: Equatable {
     /// under the same key, and this line lands on top of it.
     case edit(Edit)
 
+    /// What one transaction is, as the user decided it.
+    ///
+    /// A **sibling** of `edit` rather than another field on it, and that is not a style choice.
+    /// `parseEdit` guards `fields.count == 6` — an equality, not a minimum — so widening that
+    /// line by one field would make every `Edit` already in the journal fail to parse, and a
+    /// rejected instruction line is invisible: the row would quietly keep the values the user
+    /// thought they had changed. A new line kind cannot break an old one.
+    ///
+    /// A category is not part of what a row *is* the way an amount is, which is the second
+    /// reason it is not folded into `edit`: this line says nothing about the four fields next to
+    /// it, so a change here can never restate an amount, and a change there can never drop a
+    /// category.
+    case category(Category)
+
+    /// What every transaction from one merchant is.
+    ///
+    /// The unit the AI answers in, and the reason a monthly subscription costs one request ever
+    /// rather than one a month forever. Kept apart from `category` because the two are different
+    /// claims: this one is about a shop, that one is about a single purchase, and a row that the
+    /// user has spoken about individually must not be rewritten by a later statement about the
+    /// shop. See `LedgerStore.categoryDecisions` for how the two are ranked.
+    case merchantCategory(MerchantCategory)
+
     struct Edit: Equatable {
         let occurrenceKey: String
         let amountMinor: Int
@@ -66,6 +89,47 @@ nonisolated enum JournalInstruction: Equatable {
 
         let cardSuffix: String
         let merchant: String
+    }
+
+    /// A category on one row, named by the occurrence key that row is already addressed by.
+    struct Category: Equatable {
+        let occurrenceKey: String
+
+        /// Nil is an **explicit clear**, not a missing value.
+        ///
+        /// The distinction is the whole reason this is optional. Absent means "this line says
+        /// nothing about that row, fall through to the merchant rules"; nil means "the user
+        /// decided this row has no category, and no rule may put one back". Collapsing the two
+        /// would make it impossible to take a single row out of a merchant rule the user set
+        /// deliberately.
+        let label: String?
+
+        let source: Source
+    }
+
+    /// A category on one merchant.
+    struct MerchantCategory: Equatable {
+        /// The merchant **exactly as the row spells it**, never a normalised key.
+        ///
+        /// This is what makes the line rebuildable. `MerchantKey.normalize` is a function, and a
+        /// function can be changed; a stored key would be orphaned the moment it was, because
+        /// the row would re-derive to something the stored key no longer equals. Storing the
+        /// descriptor and normalising on every read means a change to the normaliser re-derives
+        /// every rule consistently instead of silently disconnecting them.
+        let merchant: String
+
+        let label: String
+        let source: Source
+    }
+
+    /// Who decided. `user` beats `ai`, always — the model is not allowed to overwrite a person.
+    ///
+    /// A `String` raw value so the token in the line is the token in the code, the same
+    /// arrangement `Txn.kindRaw` uses and for the same reason: the journal line and the type
+    /// cannot come to disagree about how a value is spelled.
+    enum Source: String, Equatable, Sendable {
+        case user
+        case ai
     }
 }
 
@@ -78,6 +142,15 @@ nonisolated enum JournalInstructionParser {
     static let bankPrefix = "Bank"
     static let cardPrefix = "Card"
     static let editPrefix = "Edit"
+    static let categoryPrefix = "Category"
+    static let merchantCategoryPrefix = "MerchantCategory"
+
+    /// Every leading token the app writes to itself, for the retention purge.
+    ///
+    /// One list, so a new instruction kind cannot be added without the purge learning about it —
+    /// which is the failure that would drop a user's decision off the end of the journal a week
+    /// later with nothing left to notice it by.
+    static let prefixes = [bankPrefix, editPrefix, categoryPrefix, merchantCategoryPrefix]
 
     private static let delimiter = " | "
 
@@ -122,6 +195,45 @@ nonisolated enum JournalInstructionParser {
         return fields.joined(separator: delimiter)
     }
 
+    /// `Category | <runID>#<index> | <label> | <source>`
+    ///
+    /// An empty label is the explicit clear, and it is written rather than omitted because the
+    /// line has to say *which* row it is clearing — see `JournalInstruction.Category.label`.
+    static func composeCategory(
+        occurrenceKey: String,
+        label: String?,
+        source: JournalInstruction.Source = .user
+    ) -> String {
+        [
+            categoryPrefix,
+            occurrenceKey,
+            label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            source.rawValue,
+        ].joined(separator: delimiter)
+    }
+
+    /// `MerchantCategory | <label> | <source> | <merchant>`
+    ///
+    /// The merchant is last for the same reason it is last everywhere else: it is free text a
+    /// source sent or a person typed, so it may contain the delimiter, and putting it at the
+    /// end means nothing has to be escaped or rejected.
+    ///
+    /// No empty-label form. Clearing a merchant rule is removing its line from the Raw journal,
+    /// which is a different act from clearing one row — and one that should be deliberate,
+    /// because it puts every transaction from that shop back in the queue to be asked about.
+    static func composeMerchantCategory(
+        merchant: String,
+        label: String,
+        source: JournalInstruction.Source
+    ) -> String {
+        [
+            merchantCategoryPrefix,
+            label.trimmingCharacters(in: .whitespacesAndNewlines),
+            source.rawValue,
+            merchant.trimmingCharacters(in: .whitespacesAndNewlines),
+        ].joined(separator: delimiter)
+    }
+
     // MARK: - Reading
 
     static func parse(_ text: String) -> JournalInstruction? {
@@ -146,6 +258,12 @@ nonisolated enum JournalInstructionParser {
 
         case editPrefix.lowercased():
             return parseEdit(text)
+
+        case categoryPrefix.lowercased():
+            return parseCategory(text)
+
+        case merchantCategoryPrefix.lowercased():
+            return parseMerchantCategory(text)
 
         default:
             return nil
@@ -191,9 +309,94 @@ nonisolated enum JournalInstructionParser {
         )
     }
 
+    /// `Category | <occurrenceKey> | <label> | <source>`, with `maxSplits: 3`.
+    ///
+    /// Four fields and no more. The occurrence key cannot contain the delimiter — it is a UUID
+    /// and an index — so unlike the merchant-bearing lines there is nothing here that has to be
+    /// allowed to hold a `|`. A fifth field is therefore not a future extension to tolerate but
+    /// evidence the line is not the shape it claims, and it is refused.
+    private static func parseCategory(_ text: String) -> JournalInstruction? {
+        let fields = text
+            .split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+
+        guard fields.count == 4 else { return nil }
+        guard let source = JournalInstruction.Source(rawValue: fields[3].lowercased()) else { return nil }
+
+        // The key has to be shaped like one, or this line names nothing and would sit in the
+        // journal forever being re-read on every drain for no reason.
+        let key = fields[1]
+        guard !key.isEmpty, key.contains("#") else { return nil }
+
+        let label = fields[2]
+        if label.isEmpty {
+            // An explicit clear, and only a person can make one. The model has no route to this
+            // line at all, so an `ai` clear would be a line nothing could have written — read as
+            // unreadable rather than honoured, on the same principle as a rejected parse.
+            guard source == .user else { return nil }
+        } else {
+            guard SpendingCategory.isWellFormed(label) else { return nil }
+        }
+
+        return .category(
+            JournalInstruction.Category(
+                occurrenceKey: key,
+                label: label.isEmpty ? nil : label,
+                source: source
+            )
+        )
+    }
+
+    /// `MerchantCategory | <label> | <source> | <merchant>`, with `maxSplits: 3` so the merchant
+    /// stays in one piece and keeps any `|` of its own.
+    private static func parseMerchantCategory(_ text: String) -> JournalInstruction? {
+        let fields = text
+            .split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+
+        guard fields.count == 4 else { return nil }
+        guard let source = JournalInstruction.Source(rawValue: fields[2].lowercased()) else { return nil }
+
+        let label = fields[1]
+        guard SpendingCategory.isWellFormed(label) else { return nil }
+
+        // The merchant is required. A rule naming no merchant would match every row whose
+        // normalised key happened to be empty, which is the one way a single line could
+        // categorise the entire ledger at once.
+        let merchant = fields[3]
+        guard !merchant.isEmpty else { return nil }
+
+        return .merchantCategory(
+            JournalInstruction.MerchantCategory(merchant: merchant, label: label, source: source)
+        )
+    }
+
     /// Whether this line is an instruction at all, without caring which one.
     ///
     /// Used by the purge, which has to keep these forever for the same reason it keeps a
     /// charge forever: the state they establish is rebuilt from them.
     static func isInstruction(_ text: String) -> Bool { parse(text) != nil }
+
+    /// Whether this text is *shaped* like a line the app wrote to itself, whether or not the
+    /// current parser can read it.
+    ///
+    /// `isInstruction` answers "can I read this", and the two are not the same question — which
+    /// matters because the only caller is the retention purge, and for it the difference is
+    /// whether a line survives. A `Bank` or `Category` line written by a version whose format
+    /// this one does not understand is *unreadable and irreplaceable at once*: it holds a
+    /// decision the user made, and nothing else on disk records it. Judged on `isInstruction`
+    /// alone it looks exactly like a merchant's receipt, ages out after a week, and takes the
+    /// user's decision with it — silently, on a device where the user is the only person who
+    /// could ever have noticed.
+    ///
+    /// Checking the leading token instead keeps it. The cost is that a *captured* body which
+    /// happens to begin `Bank |` is kept forever rather than for a week — a real cost, and the
+    /// cheap direction of it: a line kept too long is recoverable, and a line dropped is not.
+    static func hasInstructionPrefix(_ text: String) -> Bool {
+        let token = text
+            .split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+        return prefixes.contains { $0.lowercased() == token }
+    }
 }

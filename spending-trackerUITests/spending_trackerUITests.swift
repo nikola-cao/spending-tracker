@@ -472,4 +472,66 @@ final class spending_trackerUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Diagnostics"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Charges recorded"].waitForExistence(timeout: 5))
     }
+
+    /// Filing a charge by hand, and then filtering the feed down to it.
+    ///
+    /// One test rather than two, because they are one feature seen twice: what the picker
+    /// writes is what the filter selects on, and two tests could both pass while the two
+    /// disagreed about what a category is called.
+    @MainActor
+    func testAChargeCanBeCategorizedAndThenFilteredFor() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        app.buttons["Add manually"].tap()
+        replaceText(in: app.textFields["Merchant"], with: "UITEST CATEGORIZE")
+        replaceText(in: app.textFields["Amount"], with: "12.00")
+        app.buttons["Save"].tap()
+        app.buttons["Cancel"].tap()
+
+        let row = app.staticTexts["UITEST CATEGORIZE"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+
+        let subtitle = { (word: String) in
+            app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", word)).firstMatch
+        }
+        // A charge with no category says so. Silence would be indistinguishable from a row the
+        // app had simply failed to draw.
+        XCTAssertTrue(subtitle("Uncategorized").exists,
+                      "a new charge should say it is not categorized yet")
+
+        row.tap()
+        XCTAssertTrue(app.navigationBars["Edit charge"].waitForExistence(timeout: 5))
+
+        let picker = app.buttons["Category"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5), "the edit form should offer a category")
+        picker.tap()
+        let grocery = app.buttons["Grocery"]
+        XCTAssertTrue(grocery.waitForExistence(timeout: 5))
+        grocery.tap()
+
+        app.buttons["Save"].tap()
+        app.buttons["Cancel"].tap()
+
+        XCTAssertTrue(subtitle("Grocery").waitForExistence(timeout: 5),
+                      "the row should show the category it was filed under")
+        XCTAssertFalse(subtitle("Uncategorized").exists,
+                       "and should no longer claim to be uncategorized")
+
+        // A category it is not in must hide it — this is the whole point of the filter.
+        app.buttons["Category filter"].tap()
+        let dining = app.buttons["Dining"]
+        XCTAssertTrue(dining.waitForExistence(timeout: 5))
+        dining.tap()
+        XCTAssertFalse(app.staticTexts["UITEST CATEGORIZE"].waitForExistence(timeout: 2),
+                       "a Dining filter must not show a Grocery row")
+
+        // ...and the category it is in must bring it back.
+        app.buttons["Category filter"].tap()
+        let groceryAgain = app.buttons["Grocery"]
+        XCTAssertTrue(groceryAgain.waitForExistence(timeout: 5))
+        groceryAgain.tap()
+        XCTAssertTrue(app.staticTexts["UITEST CATEGORIZE"].waitForExistence(timeout: 5),
+                      "the row belongs in the Grocery filter")
+    }
 }

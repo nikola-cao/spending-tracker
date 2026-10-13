@@ -110,6 +110,11 @@ final class LedgerStore {
         // same pass — which is what makes an edit survive a rebuild with no extra state.
         applyEdits(instructions.edits, into: context)
 
+        // Last, and after the edits, because it reads the merchant those edits may just have
+        // changed. A merchant rule is matched on what the row *says*, so classifying against the
+        // pre-edit spelling would file a corrected row under the old name's category.
+        applyCategories(instructions.categories, into: context)
+
         do {
             try context.save()
         } catch {
@@ -179,18 +184,91 @@ final class LedgerStore {
     /// and position is meaningful, so "the last balance set" and "the deposits after it" are
     /// well defined without a single timestamp being read. Deleting a deposit's line therefore
     /// gives the money back with no extra bookkeeping — the fold simply sees one fewer.
+    /// Every category the journal asserts, in the only order there is.
+    ///
+    /// Two tiers, kept apart rather than merged, because they are different claims: a line about
+    /// one transaction says "this purchase", and a line about a merchant says "this shop". The
+    /// resolution between them is `resolve`, and the ranking it implements — specificity first,
+    /// person before model — is the whole reason they are not one dictionary.
+    ///
+    /// Within a tier the **last line in the file wins**, which needs no ordering field: file
+    /// position is the order, the journal is append-only, and a rebuild replays the same bytes
+    /// in the same sequence. The same append-and-supersede idiom the balance fold uses.
+    struct CategoryDecisions: Equatable {
+
+        /// A category some line put on one row. `label == nil` is an explicit clear rather than
+        /// a missing value — see `JournalInstruction.Category.label`.
+        struct Assignment: Equatable {
+            let label: String?
+            let source: JournalInstruction.Source
+        }
+
+        /// Keyed by occurrence key — `runID#index`, the same name every edit and deletion uses.
+        var overrides: [String: Assignment] = [:]
+
+        /// Keyed by `MerchantKey.normalize`. Split by who decided, so that a rule the model
+        /// wrote can never displace one a person wrote, whatever order they arrived in.
+        var userRules: [String: String] = [:]
+        var aiRules: [String: String] = [:]
+
+        mutating func record(_ rule: JournalInstruction.MerchantCategory) {
+            // A rule naming a merchant with no key would match every row whose key is also
+            // empty. Refused here rather than only at the parser, because this is the last
+            // place that can see it before it becomes a category on the whole ledger.
+            let key = MerchantKey.normalize(rule.merchant)
+            guard !key.isEmpty else { return }
+
+            switch rule.source {
+            case .user: userRules[key] = rule.label
+            case .ai: aiRules[key] = rule.label
+            }
+        }
+
+        /// What one row ends up filed under, or nil for nothing.
+        ///
+        /// **First match wins, and the order is the whole design.**
+        ///
+        /// 1. a line naming this transaction, whatever else exists — including one that clears
+        ///    it, which stops here rather than falling through;
+        /// 2. a rule a person wrote for this merchant;
+        /// 3. a rule the model wrote for this merchant;
+        /// 4. nothing.
+        ///
+        /// Specificity beats generality (1 before 2) so that "apply this to every Whole Foods"
+        /// cannot rewrite the one row the user has already spoken about individually. A person
+        /// beats the model (2 before 3) so that an answer arriving later cannot overwrite a
+        /// decision already made by hand — which matters because the model's answers arrive
+        /// asynchronously and *after* the fact, and a category the user set that quietly changed
+        /// under them would be the worst failure this feature could have.
+        func resolve(
+            occurrenceKey: String?,
+            merchant: String
+        ) -> (label: String, source: JournalInstruction.Source)? {
+            if let occurrenceKey, let assignment = overrides[occurrenceKey] {
+                return assignment.label.map { ($0, assignment.source) }
+            }
+
+            let key = MerchantKey.normalize(merchant)
+            guard !key.isEmpty else { return nil }
+            if let label = userRules[key] { return (label, .user) }
+            if let label = aiRules[key] { return (label, .ai) }
+            return nil
+        }
+    }
+
     /// Everything the journal says beyond "here is a row", gathered in one pass.
     ///
-    /// Both balances and the edits are collected together because all three need the same walk
-    /// in the same order, and the order is the whole point: an edit line means what it means
-    /// because of where it sits relative to the line it supersedes.
+    /// The balances, the edits and the categories are collected together because all of them need
+    /// the same walk in the same order, and the order is the whole point: a line means what it
+    /// means because of where it sits relative to the lines it supersedes. Separate passes would
+    /// each have to remember that, and would eventually stop agreeing about it.
     ///
     /// The two balances are folded in one pass rather than two, because the pass is the same
     /// and only the predicate differs — and two passes over the same records is two chances for
     /// them to disagree about which lines counted.
     private static func instructions(
         from records: [JournalRecord]
-    ) -> (bank: Int?, card: Int?, edits: [JournalInstruction.Edit]) {
+    ) -> (bank: Int?, card: Int?, edits: [JournalInstruction.Edit], categories: CategoryDecisions) {
         // Collapsed by invocation, exactly as `ingest` collapses it — and this was a latent bug
         // until the card balance arrived. One invocation used to write an `enter` and a `result`
         // line carrying the SAME body, and this walk re-parses every line it is handed, so a
@@ -206,13 +284,23 @@ final class LedgerStore {
             return (record.runID, body)
         }
 
-        // The edits are gathered first, because one may supersede a deposit that sits *earlier*
-        // in the file and the balance below has to move by the amount that was edited to. Folding
-        // in a single pass would read the original and quietly ignore the correction.
+        // The edits and the categories are gathered first, because an edit may supersede a
+        // deposit that sits *earlier* in the file and the balance below has to move by the
+        // amount that was edited to. Folding in a single pass would read the original and
+        // quietly ignore the correction.
         var edits: [JournalInstruction.Edit] = []
+        var categories = CategoryDecisions()
         for line in lines {
-            if case .edit(let edit)? = JournalInstructionParser.parse(line.body) {
+            switch JournalInstructionParser.parse(line.body) {
+            case .edit(let edit)?:
                 edits.append(edit)
+            case .category(let category)?:
+                categories.overrides[category.occurrenceKey] = CategoryDecisions.Assignment(
+                    label: category.label, source: category.source)
+            case .merchantCategory(let rule)?:
+                categories.record(rule)
+            default:
+                continue
             }
         }
         // Last one wins, matching `applyEdits`, which replays them in order.
@@ -227,7 +315,13 @@ final class LedgerStore {
                 bank = minor
             case .setCardBalance(let minor)?:
                 card = minor
-            case .edit?:
+            case .edit?, .category?, .merchantCategory?:
+                // Instructions that say nothing about either balance. Every one is named
+                // explicitly rather than caught by a `default`, and that is deliberate: the `nil`
+                // arm below assumes the body is a message a source sent, and an unrecognised
+                // instruction reaching it would be run through the parsers, where a mis-parse
+                // becomes a fabricated charge against a balance. Adding a case here is what the
+                // compiler makes you do instead.
                 continue
             case nil:
                 // Not an instruction, so it is an alert — and each kind moves the position it
@@ -246,7 +340,7 @@ final class LedgerStore {
                 }
             }
         }
-        return (bank, card, edits)
+        return (bank, card, edits, categories)
     }
 
     /// Replays every edit, in journal order, onto the rows they name.
@@ -277,6 +371,34 @@ final class LedgerStore {
                 txn.occurredAt = txn.receivedAt
                 txn.occurredAtIsFromMessage = false
             }
+        }
+    }
+
+    /// Lands the journal's category decisions on the rows.
+    ///
+    /// Re-applied in full on every drain rather than tracked as done — the same shape and the
+    /// same reason as `applyEdits`. The result is a pure function of the journal, so there is no
+    /// "already classified" flag to fall out of step with the store after a rebuild, a deletion,
+    /// or a crash between the two, and undoing a category is simply having one fewer line.
+    ///
+    /// **Writes only where the value actually changes.** The store is not rewritten on every
+    /// foreground for the rows that already agree, which keeps this pass free of the save churn
+    /// and of the `possibleDuplicate` style of accidental side effect.
+    ///
+    /// Non-charges are skipped rather than cleared: a payment or a deposit is not uncategorized,
+    /// it is *not categorizable*, and writing `""` onto one on every drain would be work done
+    /// forever to say nothing.
+    private func applyCategories(_ decisions: CategoryDecisions, into context: ModelContext) {
+        let txns = (try? context.fetch(FetchDescriptor<Txn>())) ?? []
+
+        for txn in txns where txn.isCategorizable {
+            let resolved = decisions.resolve(occurrenceKey: txn.occurrenceKey, merchant: txn.merchant)
+            let label = resolved?.label ?? ""
+            let source = resolved?.source.rawValue ?? ""
+
+            guard txn.categoryRaw != label || txn.categorySourceRaw != source else { continue }
+            txn.categoryRaw = label
+            txn.categorySourceRaw = source
         }
     }
 
@@ -436,8 +558,15 @@ final class LedgerStore {
             // produced has to stay derivable from this line for the rest of the app's life.
             if AlertParsers.parseAll(body).contains(where: \.isLedgerEntry) { return false }
             // An instruction too, and for the same reason — the bank balance is rebuilt by
-            // folding over these lines, so dropping one would quietly restate the balance.
-            if JournalInstructionParser.isInstruction(body) { return false }
+            // folding over these lines, so dropping one would quietly restate the balance. A
+            // category line is the same argument with a sharper edge: it is a decision the user
+            // made, and nothing else on disk holds it.
+            //
+            // Asked by leading token rather than by whether it parses. A line whose *format* this
+            // version cannot read is exactly the one that must not be thrown away — it was
+            // written by the app, it holds a value, and no screen can address it either. Judge it
+            // on readability and it ages out after a week like a merchant's receipt.
+            if JournalInstructionParser.hasInstructionPrefix(body) { return false }
             // Anything else — including an empty body — survives only inside the window.
             return record.receivedAt <= cutoff
         }) ?? 0
@@ -555,6 +684,89 @@ final class LedgerStore {
                     date: date,
                     cardSuffix: cardSuffix
                 ),
+                note: JournalRecord.manualMarker
+            ),
+            to: journalURL
+        )
+        return runID
+    }
+
+    enum CategoryError: LocalizedError {
+        case notAddressable
+        case emptyMerchant
+        case badLabel(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .notAddressable:
+                "This transaction has no journal line to attach a category to, so nothing was saved."
+            case .emptyMerchant:
+                "There is no merchant to remember this for."
+            case .badLabel(let label):
+                "\"\(label)\" is not something this app can write down as a category."
+            }
+        }
+    }
+
+    /// Files one transaction under a category, or clears it when `label` is nil.
+    ///
+    /// Appended, never rewritten — and here that is not only about protecting evidence. The
+    /// row's category is a *projection* of the journal, recomputed on every drain, so a line is
+    /// not a record of a change that was made: it is the whole of the value. There is nowhere
+    /// else to put it that a rebuild would not empty.
+    ///
+    /// A nil label writes an **explicit clear** rather than writing nothing, which is the
+    /// difference between "this row has no category and no rule may give it one" and "this row
+    /// says nothing, so the rule for its merchant applies". Without the distinction, a single
+    /// row could never be taken back out of a rule the user set on purpose.
+    ///
+    /// The caller drains afterwards; this only writes the line, exactly as `edit` does.
+    @discardableResult
+    func setCategory(_ txn: Txn, label: String?) throws -> UUID {
+        guard let occurrenceKey = txn.occurrenceKey else { throw CategoryError.notAddressable }
+        if let label, !SpendingCategory.isWellFormed(label) { throw CategoryError.badLabel(label) }
+
+        let runID = UUID()
+        try JournalStore.append(
+            .diagnostic(
+                runID: runID,
+                phase: JournalRecord.capturePhase,
+                raw: JournalInstructionParser.composeCategory(
+                    occurrenceKey: occurrenceKey, label: label, source: .user),
+                note: JournalRecord.manualMarker
+            ),
+            to: journalURL
+        )
+        return runID
+    }
+
+    /// Files everything from one merchant under a category.
+    ///
+    /// `merchant` must be the descriptor **as a row spells it**, never a normalised key — the
+    /// key is recomputed from this string on every read, so storing a key would orphan the rule
+    /// the moment the normaliser changed. Callers pass `txn.merchant`.
+    ///
+    /// The line is one merchant's answer, which is why a monthly subscription costs a single
+    /// request for the life of the app rather than one a month. Rows the user has filed
+    /// individually keep their own category: `CategoryDecisions.resolve` ranks a line about one
+    /// transaction above a line about the shop, so this cannot rewrite a decision already made.
+    @discardableResult
+    func setMerchantRule(
+        merchant: String,
+        label: String,
+        source: JournalInstruction.Source = .user
+    ) throws -> UUID {
+        let merchant = merchant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !merchant.isEmpty else { throw CategoryError.emptyMerchant }
+        guard SpendingCategory.isWellFormed(label) else { throw CategoryError.badLabel(label) }
+
+        let runID = UUID()
+        try JournalStore.append(
+            .diagnostic(
+                runID: runID,
+                phase: JournalRecord.capturePhase,
+                raw: JournalInstructionParser.composeMerchantCategory(
+                    merchant: merchant, label: label, source: source),
                 note: JournalRecord.manualMarker
             ),
             to: journalURL
@@ -756,7 +968,17 @@ final class LedgerStore {
         if !runIDs.isEmpty {
             // The whole read-filter-rename runs inside `JournalStore`, under one lock hold.
             // A throw here means the journal is untouched and so is the store.
-            result.lines = try JournalStore.remove(from: journalURL) { runIDs.contains($0.runID) }
+            //
+            // A category line goes with the rows it names. It is addressed by occurrence key, so
+            // once the invocation it points at is gone the line can never match anything again —
+            // while instruction lines are kept forever, so it would sit in the file for the life
+            // of the app, re-read on every drain, doing nothing. Leaving it costs nothing today
+            // and is unfixable tomorrow: no screen shows it beside the row it used to name, and
+            // nothing would ever decide on its own that it was safe to remove.
+            result.lines = try JournalStore.remove(from: journalURL) { record in
+                if runIDs.contains(record.runID) { return true }
+                return Self.namesOne(of: runIDs, record)
+            }
         }
 
         let context = container.mainContext
@@ -772,6 +994,26 @@ final class LedgerStore {
         result.rows = outcome.rows
         result.saveError = outcome.saveError
         return result
+    }
+
+    /// Whether this line is a category naming a row whose invocation is being deleted.
+    ///
+    /// Parsed rather than pattern-matched on the text. The occurrence key's shape belongs to
+    /// `JournalInstructionParser`, and a second reader of it here would be a second place for it
+    /// to drift out of agreement with the writer.
+    ///
+    /// `nonisolated` because it is called from inside `JournalStore.remove`'s critical section,
+    /// which holds a lock and is deliberately not on the main actor. It touches no store state,
+    /// so there is nothing for the isolation to protect.
+    nonisolated private static func namesOne(of runIDs: Set<UUID>, _ record: JournalRecord) -> Bool {
+        guard case .category(let category)? = JournalInstructionParser.parse(record.trimmedBody)
+        else { return false }
+        guard let uuid = category.occurrenceKey
+            .split(separator: "#", maxSplits: 1).first
+            .flatMap({ UUID(uuidString: String($0)) })
+        else { return false }
+
+        return runIDs.contains(uuid)
     }
 
     /// Deletes rows and saves, or rolls back so what is on screen is what is on disk.
@@ -883,7 +1125,10 @@ final class LedgerStore {
         result.lastCapture = records.last {
             $0.note != JournalRecord.manualMarker && !$0.trimmedBody.isEmpty
         }?.receivedAt
-        result.lastManualEntry = records.last { $0.note == JournalRecord.manualMarker }?.receivedAt
+        result.lastManualEntry = records.last {
+            $0.note == JournalRecord.manualMarker
+                && !JournalInstructionParser.hasInstructionPrefix($0.trimmedBody)
+        }?.receivedAt
 
         result.journalBytes = (try? FileManager.default
             .attributesOfItem(atPath: journalURL.path(percentEncoded: false))[.size] as? Int) ?? 0

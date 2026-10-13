@@ -270,6 +270,52 @@ money did. `Money.minorUnits` still refuses a minus for the captured sources, wh
 charge is a broken parse rather than a refund — only a person typing gets one, through
 `Money.signedMinorUnits`.
 
+### Categories
+
+Dining, grocery, retail, transportation, miscellaneous. A category is **a journal line, never a
+field on the row** — for the same reason a bank balance is one. The store is deleted and replayed
+whenever `ledgerSchemaVersion` changes, so a category that lived only on `Txn` would work
+perfectly until the first property rename and then be gone, taking both the classifier's answers
+and the user's corrections with it, silently.
+
+Two lines, and both are siblings of `Edit` rather than new fields on it. That is not style:
+`parseEdit` guards `fields.count == 6` — an *equality*, not a minimum — so widening that line
+would make every edit already in the journal fail to parse, and a rejected instruction line is
+invisible.
+
+```
+Category         | <runID>#<index> | <label> | user
+MerchantCategory | <label> | ai|user | <merchant verbatim>
+```
+
+The first is about one transaction, the second about a shop. `applyCategories` resolves them on
+every drain, in this order:
+
+1. a line naming this transaction — **including one that clears it**, which stops here rather
+   than falling through;
+2. a rule a person wrote for this merchant;
+3. a rule the model wrote for this merchant;
+4. nothing.
+
+**Specificity beats recency, and a person beats the model.** So "remember this for every Whole
+Foods" cannot rewrite the one row already filed by hand, and an answer arriving from the API
+later cannot overwrite a decision already made — which matters because those answers arrive
+asynchronously and after the fact.
+
+An empty label is an **explicit clear**, not a missing value. Absent means "no line about this
+row, so the rules apply"; empty means "no category, and no rule may give it one". Without the
+distinction a single row could never be taken back out of a rule set on purpose.
+
+**Only charges.** A payment is a card being settled and a deposit is money arriving; neither is
+spending, so neither is filed — a payment under Dining would make that figure a lie. They are
+left unset and show no chip at all, rather than the word "Uncategorized", because they are not
+awaiting an answer. The filter matches charges only, `Uncategorized` included.
+
+**The three figures at the top never move when the filter changes.** They read the month, not the
+filtered rows: a Balance narrowed to dining sitting above an unfiltered Bank would make
+`Remaining` mean nothing. What one category cost is the subtotal in the list's own header, which
+is the figure that is honestly about the rows under it.
+
 ### The Charge tab
 
 A charge is: merchant, amount, purchase date, and the card's last digits.
@@ -687,10 +733,12 @@ would have been nothing left to notice it by.
 - **Statement import and reconciliation.** The plan's ledger of record, but it needs a real
   statement export first. Building an importer against a guessed CSV format is the same
   mistake the parser nearly made before real messages arrived.
-- **Editing a transaction.** Has a design problem worth deciding before building: the store
-  is *derived* from the journal, so an edit is not durable — replaying the journal would
-  discard it. Either edits get written back to the journal as their own record, or the store
-  stops being fully derived and the recovery story changes.
+- **Classifying a merchant automatically.** The design is settled — a lazy pass over merchants
+  with no category, calling DeepSeek, batched and retried at the next foreground — but the
+  pass itself is not built. Everything it needs is: the lines, the precedence and the fold are
+  in place and tested, so the classifier is a producer of `MerchantCategory` lines and nothing
+  else. The feature is fully usable without it, which is the point of building it this way
+  round.
 
 ## The parser
 

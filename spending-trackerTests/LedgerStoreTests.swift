@@ -1568,4 +1568,277 @@ struct LedgerStoreTests {
             try ledger.edit(orphan, merchant: "X", amount: "1.00", date: nil, cardSuffix: "")
         }
     }
+
+    // MARK: - Categories
+
+    /// Writes an instruction line straight into the journal.
+    ///
+    /// How a line written by another version of the app arrives, and how these tests say what
+    /// the journal holds without going through the writers that are themselves under test.
+    private func appendInstruction(_ body: String, to url: URL) throws {
+        try appendRecord(body, runID: UUID(), phase: JournalRecord.capturePhase, at: Date(), to: url)
+    }
+
+    private func journalBodies(_ url: URL) -> [String] {
+        JournalStore.readAll(from: url).map(\.trimmedBody)
+    }
+
+    /// The occurrence key of the one row in the store — the name a category line addresses.
+    private func key(of container: ModelContainer) throws -> String {
+        try #require(txns(container).first?.occurrenceKey)
+    }
+
+    @Test func aMerchantRuleFilesACharge() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("42.00", "WHOLE FOODS MKT"), to: url)
+        ledger.drain()
+
+        try appendInstruction("MerchantCategory | grocery | ai | WHOLE FOODS MKT", to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        #expect(row.categoryRaw == "grocery")
+        #expect(row.categorySourceRaw == "ai")
+        #expect(row.categoryName == "Grocery")
+        #expect(!row.categoryWasSetByPerson)
+    }
+
+    /// The reason the key is normalised at all: one answer about a shop covers every way the
+    /// sources spelled it — including a spelling that had not arrived when the answer was given.
+    @Test func oneRuleCoversEverySpellingOfOneMerchant() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("42.00", "WHOLE FOODS MKT"), to: url)
+        ledger.drain()
+
+        // Answered about one spelling...
+        try appendInstruction("MerchantCategory | grocery | ai | WHOLE FOODS MKT #12", to: url)
+        ledger.drain()
+
+        // ...and a differently spelled charge arrives afterwards.
+        try appendAlert(charge("8.00", "WHOLE FOODS MKT #1234"), to: url)
+        ledger.drain()
+
+        let rows = txns(container)
+        #expect(rows.count == 2)
+        #expect(rows.allSatisfy { $0.categoryRaw == "grocery" }, "\(rows.map(\.categoryRaw))")
+    }
+
+    /// Specificity beats recency. The rule line is *later in the file* and still loses, because
+    /// a statement about one purchase outranks a statement about a shop.
+    @Test func aRowTheUserFiledBeatsALaterRuleForItsMerchant() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("42.00", "AMAZON"), to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        try ledger.setCategory(row, label: "grocery")
+        ledger.drain()
+
+        try appendInstruction("MerchantCategory | retail | ai | AMAZON", to: url)
+        ledger.drain()
+
+        let after = try #require(txns(container).first)
+        #expect(after.categoryRaw == "grocery", "a rule rewrote a row the user had filed")
+        #expect(after.categorySourceRaw == "user")
+    }
+
+    /// A person beats the model, in either order. The model's answers arrive asynchronously and
+    /// after the fact, so "newest wins" would let a guess overwrite a decision.
+    @Test func aPersonsRuleBeatsTheModelsWhicheverCameLast() throws {
+        for userFirst in [true, false] {
+            let (ledger, container, url) = try makeStore()
+            try appendAlert(charge("42.00", "CHICK-FIL-A"), to: url)
+            ledger.drain()
+
+            let ai = "MerchantCategory | retail | ai | CHICK-FIL-A"
+            let person = "MerchantCategory | dining | user | CHICK-FIL-A"
+            for line in userFirst ? [person, ai] : [ai, person] {
+                try appendInstruction(line, to: url)
+            }
+            ledger.drain()
+
+            let row = try #require(txns(container).first)
+            #expect(row.categoryRaw == "dining", "userFirst=\(userFirst)")
+            #expect(row.categorySourceRaw == "user")
+        }
+    }
+
+    /// The distinction the empty label exists for. Without it a single row could never be taken
+    /// back out of a rule the user set deliberately.
+    @Test func clearingOneRowTakesItOutOfItsMerchantsRule() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("42.00", "AMAZON"), to: url)
+        try appendAlert(charge("9.00", "AMAZON"), to: url)
+        ledger.drain()
+
+        try appendInstruction("MerchantCategory | retail | user | AMAZON", to: url)
+        ledger.drain()
+        #expect(txns(container).allSatisfy { $0.categoryRaw == "retail" })
+
+        let one = try #require(txns(container).first)
+        try ledger.setCategory(one, label: nil)
+        ledger.drain()
+
+        let rows = txns(container)
+        #expect(rows.filter { $0.categoryRaw.isEmpty }.count == 1, "the cleared row")
+        #expect(rows.filter { $0.categoryRaw == "retail" }.count == 1, "the other row keeps the rule")
+    }
+
+    /// A second line about the same row supersedes the first — the append-and-supersede idiom
+    /// the balance fold uses, with file position as the only order there is.
+    @Test func aSecondCategoryLineSupersedesTheFirst() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("42.00", "BREEZE"), to: url)
+        ledger.drain()
+
+        try appendInstruction("Category | \(try key(of: container)) | dining | user", to: url)
+        try appendInstruction("Category | \(try key(of: container)) | grocery | user", to: url)
+        ledger.drain()
+
+        #expect(txns(container).first?.categoryRaw == "grocery")
+    }
+
+    /// The whole reason a category is a journal line rather than a property. The store is
+    /// deleted and replayed on any schema change, so a value that lived only on the row would
+    /// work perfectly until the first rename and then be gone with nothing to restore it from.
+    @Test func aCategorySurvivesARebuild() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("42.00", "WHOLE FOODS MKT"), to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        try ledger.setCategory(row, label: "grocery")
+        try appendInstruction("MerchantCategory | dining | ai | CHICK-FIL-A", to: url)
+        ledger.drain()
+
+        // Every row gone, exactly as `resetStoreIfSchemaChanged` leaves things.
+        let rebuiltContainer = try freshContainer()
+        LedgerStore(container: rebuiltContainer, journalURL: url).drain()
+
+        let rows = txns(rebuiltContainer)
+        #expect(rows.count == 1)
+        let rebuilt = try #require(rows.first)
+        #expect(rebuilt.categoryRaw == "grocery")
+        #expect(rebuilt.categorySourceRaw == "user")
+    }
+
+    /// Only a charge is spending. A payment is a card being settled and a deposit is money
+    /// arriving; filing either under a spending category would make that category's total a
+    /// lie, and the rule that matches their merchant must not reach them.
+    @Test func aPaymentAndADepositAreNeverFiled() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.appendManual(
+            kind: .payment, merchant: "AMEX PAYMENT", amount: "-825.77", date: nil, cardSuffix: "")
+        try ledger.appendManual(
+            kind: .deposit, merchant: "ZELLE FROM SAM", amount: "25.00", date: nil, cardSuffix: "")
+        ledger.drain()
+
+        try appendInstruction("MerchantCategory | miscellaneous | ai | AMEX PAYMENT", to: url)
+        try appendInstruction("MerchantCategory | miscellaneous | ai | ZELLE FROM SAM", to: url)
+        ledger.drain()
+
+        let rows = txns(container)
+        #expect(rows.count == 2)
+        #expect(rows.allSatisfy { !$0.isCategorizable })
+        #expect(rows.allSatisfy { $0.categoryRaw.isEmpty }, "\(rows.map(\.categoryRaw))")
+    }
+
+    /// Deleting the line is the whole undo. `applyCategories` recomputes from scratch on every
+    /// drain, so having one fewer line is all it takes — nothing has to be un-applied.
+    @Test func deletingTheCategoryLineHandsTheRowBackToItsMerchantRule() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("42.00", "AMAZON"), to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        try appendInstruction("MerchantCategory | retail | user | AMAZON", to: url)
+        try ledger.setCategory(row, label: "grocery")
+        ledger.drain()
+        #expect(txns(container).first?.categoryRaw == "grocery")
+
+        let override = try #require(
+            JournalStore.readAll(from: url).last { $0.trimmedBody.hasPrefix("Category |") })
+        try ledger.deleteJournalLine(override)
+        ledger.drain()
+
+        // Back to the merchant rule, not to nothing — which is what "delete the line" means.
+        #expect(txns(container).first?.categoryRaw == "retail")
+    }
+
+    /// A line naming a row is addressed to that row, so when the transaction goes the line can
+    /// never match anything again — and instruction lines are kept forever, so it would sit in
+    /// the file being re-read on every drain for the life of the app.
+    @Test func deletingATransactionTakesItsCategoryLineWithIt() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("42.00", "AMAZON"), to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        try ledger.setCategory(row, label: "grocery")
+        try appendInstruction("MerchantCategory | retail | user | AMAZON", to: url)
+        ledger.drain()
+        #expect(journalBodies(url).contains { $0.hasPrefix("Category |") })
+
+        try ledger.delete([row])
+
+        #expect(txns(container).isEmpty)
+        #expect(!journalBodies(url).contains { $0.hasPrefix("Category |") },
+                "the category line outlived the row it named")
+        // The rule is about the shop, not the row, so it stays.
+        #expect(journalBodies(url).contains { $0.hasPrefix("MerchantCategory |") })
+    }
+
+    /// A category line is stamped `manualMarker` — the app writing to its own journal is not a
+    /// source sending text — so it must not be mistaken for a hand-typed transaction.
+    @Test func filingACategoryIsNotAManualEntry() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("42.00", "AMAZON"), to: url)
+        ledger.drain()
+
+        let typedAt = ledger.diagnostics().lastManualEntry
+        #expect(typedAt == nil)
+
+        let row = try #require(txns(container).first)
+        try ledger.setCategory(row, label: "retail")
+        ledger.drain()
+
+        #expect(ledger.diagnostics().lastManualEntry == nil)
+        #expect(ledger.diagnostics().lastCapture != nil, "the capture is still the capture")
+    }
+
+    /// The fold runs after the edits, so a rule is matched against the merchant the row ended
+    /// up with rather than the one it was captured under.
+    @Test func correctingAMerchantRefilesTheRow() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("4.00", "BREEZE*00HS5MV"), to: url)
+        ledger.drain()
+
+        try appendInstruction("MerchantCategory | dining | user | BREEZE COFFEE", to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        #expect(row.categoryRaw.isEmpty, "the captured spelling matches nothing")
+
+        try ledger.edit(row, merchant: "BREEZE COFFEE", amount: "4.00", date: nil, cardSuffix: "7224")
+        ledger.drain()
+
+        #expect(txns(container).first?.categoryRaw == "dining")
+    }
+
+    /// A rule naming no merchant would match every row whose key is empty — one line filing the
+    /// whole ledger. Refused at the writer and again in the fold.
+    @Test func aMerchantRuleWithNoMerchantIsRefused() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("42.00", "AMAZON"), to: url)
+        ledger.drain()
+
+        #expect(throws: LedgerStore.CategoryError.self) {
+            try ledger.setMerchantRule(merchant: "   ", label: "retail")
+        }
+        try appendInstruction("MerchantCategory | retail | ai |  ", to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        #expect(row.categoryRaw.isEmpty)
+    }
 }

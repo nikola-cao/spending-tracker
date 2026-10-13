@@ -88,6 +88,21 @@ extension JournalLineOutcome {
                 parts.append("This line is an edit to a row you already had.")
                 parts.append("Deleting it undoes the change: the row goes back to what the line "
                              + "this one superseded said.")
+            case .category(let category):
+                parts.append(category.label == nil
+                    ? "This line says one transaction has no category."
+                    : "This line is a category you set on one transaction.")
+                // Not "the row reverts to what it said before" — a category has no single
+                // superseded value. It goes back to whatever still stands behind it, which may
+                // be a rule about the merchant, or nothing at all.
+                parts.append("Deleting it hands that transaction back to the rule for its "
+                             + "merchant, if there is one — which may put it in a different "
+                             + "category, or in none.")
+            case .merchantCategory(let rule):
+                parts.append("This line is a category you set for everything from one merchant.")
+                parts.append("Deleting it hands every transaction from \"\(rule.merchant)\" back "
+                             + "to whatever else applies — and makes that merchant eligible to be "
+                             + "asked about again, so an answer you deleted may come back.")
             }
 
         case .movement(let entries):

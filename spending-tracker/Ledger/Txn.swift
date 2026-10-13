@@ -91,6 +91,29 @@ final class Txn {
     /// loses money invisibly, while a spurious flag costs one tap.
     var possibleDuplicate: Bool = false
 
+    /// What this row is filed under, as the token the journal records. Empty means none.
+    ///
+    /// **A projection of the journal, not a value in its own right.** Every drain recomputes it
+    /// from the category lines the journal holds — see `LedgerStore.applyCategories` — which is
+    /// the only reason it is allowed to be a stored property at all. The store is deleted and
+    /// replayed whenever `ledgerSchemaVersion` changes, so a category kept *only* here would
+    /// work perfectly until the first schema change and then be gone, silently, with the AI's
+    /// answers and the user's corrections alike. It survives because it can always be
+    /// re-derived, exactly as `amountMinor` and `merchant` survive `applyEdits`.
+    ///
+    /// A string rather than an enum, for the reason `kindRaw` is one: the journal outlives the
+    /// code that wrote it, and a row named by a category this build has never heard of has to
+    /// stay readable rather than rendering as nothing.
+    var categoryRaw: String = ""
+
+    /// Who put it there: `""`, `user`, or `ai`.
+    ///
+    /// Worth a field of its own because the two are not the same claim and the user is entitled
+    /// to tell them apart — a category the model guessed is a suggestion, and one the user set
+    /// is a decision. It is also what makes the precedence rule expressible: a person's answer
+    /// outranks the model's, on the row and on the merchant alike.
+    var categorySourceRaw: String = ""
+
     var event: AlertEvent?
 
     /// `kind` defaults to a charge because that is what almost every row is, and because a
@@ -179,6 +202,32 @@ extension Txn {
     /// `spendingTotal` filters it out for. A payment settles spending that belongs to an earlier
     /// month, so counting it here would make a heavy month read as light.
     var isPayment: Bool { kindRaw == ParsedAlert.Kind.payment.rawValue }
+
+    /// True when this row is a card charge — the only kind that is spending, and so the only
+    /// kind a category is meaningful for.
+    var isCharge: Bool { kindRaw == ParsedAlert.Kind.charge.rawValue }
+
+    /// Whether this row can carry a category at all.
+    ///
+    /// A deposit is money arriving or leaving the bank — a paycheck, a Zelle, a Venmo to a
+    /// friend — and a payment is a card being settled. Neither is spending, so neither belongs
+    /// in a spending bucket: filing a payment under "Dining" would make that figure a lie, and
+    /// filing it under "Miscellaneous" only makes the lie harder to see. They are left unset,
+    /// and the feed shows no chip for them at all rather than the word "Uncategorized", because
+    /// they are not missing an answer — the question does not apply.
+    var isCategorizable: Bool { isCharge }
+
+    /// True when this row is filed under something.
+    var hasCategory: Bool { !categoryRaw.isEmpty }
+
+    /// The category as a chip reads it. Empty when there is none, which is why the caller has
+    /// to ask `hasCategory` rather than test this for emptiness itself.
+    var categoryName: String { SpendingCategory.displayName(for: categoryRaw) }
+
+    /// True when a person chose this, false when the model guessed it.
+    var categoryWasSetByPerson: Bool {
+        categorySourceRaw == JournalInstruction.Source.user.rawValue
+    }
 
     /// A window of calendar months, newest first, ending with the one `date` falls in.
     ///
