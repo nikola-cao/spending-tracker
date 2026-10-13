@@ -70,6 +70,14 @@ struct JournalLineOutcomeTests {
         #expect(record("Bank | 1234.56").outcome == .instruction(.setBankBalance(minor: 123_456)))
     }
 
+    /// A card balance is an instruction too, and a separate one — the two lines are told apart
+    /// by their leading word, so a `Card` line must not classify as a bank assertion. The
+    /// confirmation the swipe shows names which figure moves, and naming the wrong one is a
+    /// promise about the wrong number.
+    @Test func aCardBalanceLineIsItsOwnInstruction() {
+        #expect(record("Card | 240.00").outcome == .instruction(.setCardBalance(minor: 24_000)))
+    }
+
     @Test func anEditLineIsAnEditInstruction() {
         let line = "Edit | \(UUID().uuidString)#0 | 4.00 |  | 7224 | BREEZE COFFEE"
         guard case .instruction(.edit(let edit)) = record(line).outcome else {
@@ -167,12 +175,68 @@ struct JournalLineOutcomeTests {
             .message(storedRows: 1).contains("Bank figure changes"))
     }
 
+    /// The ordinary case, and the one the copy was silent about until the card balance existed:
+    /// a captured charge.
+    ///
+    /// Nothing about the row suggests a figure depends on it — no money moved anywhere when it
+    /// landed, it is only owed on a card. But the Balance figure is folded from exactly these
+    /// rows, so deleting one restates it. A confirmation that said nothing would hide a figure
+    /// moving behind the line that reads as pure bookkeeping.
+    @Test func aChargeWarnsWhenTheBalanceWillMove() {
+        guard case .movement(let entries) = record(chargeBody).outcome else {
+            Issue.record("a captured charge must classify as a movement")
+            return
+        }
+        let allAffectTheCard = entries.allSatisfy(\.affectsCard)
+        let anyAffectTheBank = entries.contains(where: \.affectsBank)
+        #expect(allAffectTheCard)
+        #expect(!anyAffectTheBank, "a charge never moves the bank")
+        #expect(JournalLineOutcome.movement(entries: entries)
+            .message(storedRows: 1).contains("Balance figure changes"))
+    }
+
+    /// A payment is the one movement that moves both figures, so it gets both sentences. Naming
+    /// one and not the other would leave the second to be discovered.
+    @Test func aPaymentWarnsAboutBothFigures() {
+        let payment = ManualEntryParser.compose(
+            kind: .payment, merchant: "AMEX PAYMENT", amount: "-825.77", date: nil, cardSuffix: "")
+        guard case .movement(let entries) = record(payment).outcome else {
+            Issue.record("a composed Manual payment must classify as a movement")
+            return
+        }
+        let message = JournalLineOutcome.movement(entries: entries).message(storedRows: 1)
+        #expect(message.contains("Bank figure changes"))
+        #expect(message.contains("Balance figure changes"))
+    }
+
+    /// And a deposit names the bank and only the bank. The two sentences are separate for
+    /// exactly this: one copy that named both for every movement would be wrong about every
+    /// Zelle, and a deposit never touches a card.
+    @Test func aDepositWarnsAboutTheBankAndNotTheBalance() {
+        let deposit = ManualEntryParser.compose(
+            kind: .deposit, merchant: "ZELLE", amount: "25.00", date: nil, cardSuffix: "")
+        guard case .movement(let entries) = record(deposit).outcome else {
+            Issue.record("a composed Manual deposit must classify as a movement")
+            return
+        }
+        let message = JournalLineOutcome.movement(entries: entries).message(storedRows: 1)
+        #expect(message.contains("Bank figure changes"))
+        #expect(!message.contains("Balance figure changes"))
+    }
+
     /// An instruction is not a row, so a copy that counted only rows would promise "nothing
     /// changes" while the Bank figure moved or a row reverted. Each instruction names its own
     /// visible consequence instead.
     @Test func theInstructionMessageExplainsTheVisibleConsequence() {
         let bank = JournalLineOutcome.instruction(.setBankBalance(minor: 1_000))
         #expect(bank.message(storedRows: 0).contains("Bank figure is restated"))
+
+        // And it names the *Balance* figure, not the Bank one. "Balance" is now the card figure
+        // on the summary row, so a card line whose copy said "Bank" would point at a number
+        // that was never going to move.
+        let card = JournalLineOutcome.instruction(.setCardBalance(minor: 24_000))
+        #expect(card.message(storedRows: 0).contains("Balance figure is restated"))
+        #expect(!card.message(storedRows: 0).contains("Bank figure"))
 
         let edit = JournalInstruction.Edit(
             occurrenceKey: "x#0", amountMinor: 400, occurredAt: nil, cardSuffix: "", merchant: "M")
@@ -186,6 +250,7 @@ struct JournalLineOutcomeTests {
         let all: [JournalLineOutcome] = [
             .empty,
             .instruction(.setBankBalance(minor: 1)),
+            .instruction(.setCardBalance(minor: 1)),
             .movement(entries: []),
             .nothing,
         ]

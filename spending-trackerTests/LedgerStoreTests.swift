@@ -1118,6 +1118,183 @@ struct LedgerStoreTests {
         #expect(ledger.bankBalanceMinor == 12_500)
     }
 
+    // MARK: - The card balance
+
+    /// What is owed: what the cards were charged, less what has been paid off. Charges and
+    /// payments are the only two kinds that move it.
+    @Test func theCardBalanceIsChargesLessPayments() throws {
+        let (ledger, _, url) = try makeStore()
+
+        try appendAlert(charge("40.00", "BREEZE COFFEE"), to: url)
+        try appendAlert(charge("15.49", "NETFLIX.COM"), to: url)
+        try appendAlert(
+            ManualEntryParser.compose(
+                kind: .payment, merchant: "AMEX PAYMENT", amount: "-20.00", date: nil,
+                cardSuffix: ""),
+            to: url
+        )
+        ledger.drain()
+
+        #expect(ledger.cardBalanceMinor == 3_549, "4000 + 1549 - 2000")
+    }
+
+    /// A deposit never touches a card, whichever way the money went.
+    ///
+    /// This is the one place the card fold and the bank fold part company, and the reason they
+    /// are two folds rather than one. Folding deposits in would have counted every Zelle twice:
+    /// once as money that moved, and once as money owed.
+    @Test func aDepositLeavesTheCardBalanceAlone() throws {
+        let (ledger, _, url) = try makeStore()
+
+        try appendDeposit("300.00", "ZELLE FROM SAM", to: url)
+        try appendAlert(
+            ManualEntryParser.compose(
+                kind: .deposit, merchant: "VENMO PAYMENT", amount: "-200.00", date: nil,
+                cardSuffix: ""),
+            to: url
+        )
+        ledger.drain()
+
+        #expect(ledger.cardBalanceMinor == 0, "neither direction of a deposit touches a card")
+        #expect(ledger.bankBalanceMinor == 10_000, "and both of them move the bank")
+    }
+
+    /// A declined alert is not a movement of money, so it must not move a balance.
+    ///
+    /// This is the case that decides the fold's predicate, and it is not hypothetical — the
+    /// body below is in the corpus. "Anything that is not a deposit" reads as the obvious
+    /// predicate to write, and it is **true** of an unrecognised verb. Folding on it would raise
+    /// the card balance by an amount the feed never showed, and then drop it again a week later
+    /// when the retention window purged the line it came from: a figure moving with no row
+    /// changing, which is the least explicable thing this app could do.
+    @Test func aDeclinedAlertLeavesTheCardBalanceAlone() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(
+            "Fidelity\u{00AE} Credit Card: Your card ending in 7224 was declined $12.00 at AMAZON.COM*MK1A2B3C4." + trailer,
+            to: url
+        )
+
+        let result = ledger.drain()
+
+        #expect(result.notCharges == 1)
+        #expect(txns(container).isEmpty)
+        #expect(ledger.cardBalanceMinor == 0, "nothing was charged, so nothing is owed")
+    }
+
+    /// An assertion about the world beats everything before it, exactly as a `Bank` line does.
+    /// What comes after it still adds.
+    @Test func aCardBalanceLineOverridesEverythingBeforeIt() throws {
+        let (ledger, _, url) = try makeStore()
+
+        try appendAlert(charge("40.00", "BREEZE COFFEE"), to: url)
+        try appendAlert(JournalInstructionParser.composeCardBalance(120_000), to: url)
+        try appendAlert(charge("10.00", "LATER COFFEE"), to: url)
+        ledger.drain()
+
+        #expect(ledger.cardBalanceMinor == 121_000,
+                "the line restates it; only the charge after it adds")
+    }
+
+    /// Two of them, and the last wins — the same rule, and for the same reason, as a second
+    /// `Bank` line.
+    @Test func theLastCardBalanceLineWins() throws {
+        let (ledger, _, url) = try makeStore()
+
+        try appendAlert(JournalInstructionParser.composeCardBalance(10_000), to: url)
+        try appendAlert(JournalInstructionParser.composeCardBalance(25_000), to: url)
+        ledger.drain()
+
+        #expect(ledger.cardBalanceMinor == 25_000)
+    }
+
+    /// The fold re-parses every line it is handed, and a charge captured before single-line
+    /// capture was journalled **twice** under one runID. Without collapsing the pair the card
+    /// balance reads as double the row printed directly beneath it.
+    ///
+    /// The bank fold never had to care, because the only kinds it summed — deposits and
+    /// payments — postdate the pair entirely. Charges are the kind that *was* paired, and
+    /// charges are the kind a card balance is made of.
+    @Test func aLegacyChargePairCountsOnceTowardsTheCardBalance() throws {
+        let (ledger, container, url) = try makeStore()
+
+        try appendLegacyPair(charge("2.50", "BREEZE*00HS5MV"), to: url)
+        ledger.drain()
+
+        #expect(txns(container).count == 1, "the two lines are one invocation")
+        #expect(ledger.cardBalanceMinor == 250, "and one charge's worth of balance")
+    }
+
+    /// An edit has to reach the card balance, or the figure disagrees with the row printed
+    /// directly beneath it — and that row is the one the user just changed.
+    @Test func editingAChargeChangesWhatItDidToTheCardBalance() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("25.00", "BREEZE COFFEE"), to: url)
+        ledger.drain()
+        #expect(ledger.cardBalanceMinor == 2_500)
+
+        let txn = try #require(txns(container).first)
+        try ledger.edit(txn, merchant: "BREEZE COFFEE", amount: "40.00", date: nil, cardSuffix: "")
+        ledger.drain()
+
+        #expect(ledger.cardBalanceMinor == 4_000)
+    }
+
+    /// Derived, like the bank and for the same reason: a schema change deletes the store, and
+    /// the journal is then the only thing that can restore the figure.
+    @Test func aCardBalanceSetByHandSurvivesARebuild() throws {
+        let (ledger, _, url) = try makeStore()
+        try ledger.setCardBalance(88_800)
+        #expect(ledger.cardBalanceMinor == 88_800)
+
+        // A second store over the same journal is exactly what `resetStoreIfSchemaChanged`
+        // leaves behind: the rows are gone and the journal is all there is.
+        let rebuilt = LedgerStore(
+            container: try ModelContainer(
+                for: Schema([AlertEvent.self, Txn.self]),
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            ),
+            journalURL: url
+        )
+        rebuilt.drain()
+
+        #expect(rebuilt.cardBalanceMinor == 88_800)
+    }
+
+    /// Deleting the line removes the assertion and the figure is restated from what is left —
+    /// the behaviour the Raw journal's confirmation dialog promises when it offers the swipe.
+    @Test func deletingACardBalanceLineRestatesFromWhatIsLeft() throws {
+        let (ledger, _, url) = try makeStore()
+        try appendAlert(charge("25.00", "BREEZE COFFEE"), to: url)
+        try ledger.setCardBalance(50_000)
+        #expect(ledger.cardBalanceMinor == 50_000)
+
+        let cardLine = try #require(JournalStore.readAll(from: url).last)
+        #expect(cardLine.outcome == .instruction(.setCardBalance(minor: 50_000)))
+
+        let result = try ledger.deleteJournalLine(cardLine)
+        ledger.drain()
+
+        #expect(result.rows == 0, "an instruction is not a row")
+        #expect(ledger.cardBalanceMinor == 2_500, "only the charge is left to fold")
+    }
+
+    /// Kept forever, like every other instruction. Dropping an old one would quietly restate
+    /// the Balance the day it aged out of the retention window.
+    @Test func anOldCardBalanceLineIsNeverPurged() throws {
+        let (ledger, _, url) = try makeStore()
+        // Arrived well outside the week-long window that non-charges get.
+        try appendAlert(
+            JournalInstructionParser.composeCardBalance(50_000),
+            at: Date().addingTimeInterval(-30 * 24 * 60 * 60),
+            to: url
+        )
+
+        ledger.drain()
+
+        #expect(ledger.cardBalanceMinor == 50_000)
+        #expect(JournalStore.readAll(from: url).count == 1)
+    }
+
     // MARK: - Payments
 
     /// A payment is the one movement that comes off both figures: the bank, because the money

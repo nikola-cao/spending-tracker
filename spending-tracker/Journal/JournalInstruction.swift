@@ -25,6 +25,25 @@ nonisolated enum JournalInstruction: Equatable {
     /// adjusting it — this is an assertion about the world, not a movement of money.
     case setBankBalance(minor: Int)
 
+    /// The user typed a card balance in — what is owed on the cards and not yet paid off.
+    ///
+    /// A separate line from the bank balance rather than one net figure, because the two are
+    /// different claims and only one of them is true of any given number the user reads off a
+    /// statement. They also move for different reasons: a charge raises this and leaves the bank
+    /// alone, a deposit raises the bank and leaves this alone.
+    ///
+    /// **Signed, and positive means owed.** That is the sign the card rows themselves carry — a
+    /// charge is stored positive and a payment negative — so a hand-typed balance and the sum of
+    /// the rows it supersedes cannot disagree about which way round the number goes. A negative
+    /// value is a card in credit, which is a real state and not an error.
+    ///
+    /// It exists for the same reason `setBankBalance` does, and it is worth stating plainly:
+    /// the app cannot work out what is owed. It knows what it has *seen* charged, and the ledger
+    /// is incomplete by construction — nothing before the app was installed, a source that only
+    /// alerts above a floor, and alerts that never arrived. What it can never know is what those
+    /// gaps add up to. This line is the only place that can be said.
+    case setCardBalance(minor: Int)
+
     /// The user changed something already recorded.
     ///
     /// **Appended, never edited in place**, which is the whole reason it carries a key. The
@@ -57,6 +76,7 @@ nonisolated enum JournalInstructionParser {
     /// The leading tokens. Each reads plainly in the raw journal, where a person may be looking
     /// straight at it.
     static let bankPrefix = "Bank"
+    static let cardPrefix = "Card"
     static let editPrefix = "Edit"
 
     private static let delimiter = " | "
@@ -69,6 +89,14 @@ nonisolated enum JournalInstructionParser {
     /// composers use it: the line has to be re-readable however the amount was written.
     static func composeBankBalance(_ minor: Int) -> String {
         [bankPrefix, Money.decimalString(fromMinor: minor)].joined(separator: delimiter)
+    }
+
+    /// `Card | 240.00`
+    ///
+    /// Same shape and same reasoning as the bank line above, including the canonical decimal:
+    /// the line has to be re-readable however the amount was written.
+    static func composeCardBalance(_ minor: Int) -> String {
+        [cardPrefix, Money.decimalString(fromMinor: minor)].joined(separator: delimiter)
     }
 
     /// `Edit | <runID>#<index> | <amount> | <yyyy-MM-dd> | <cardSuffix> | <merchant>`
@@ -110,6 +138,11 @@ nonisolated enum JournalInstructionParser {
             // Signed: an overdrawn account is a real balance.
             guard let minor = Money.signedMinorUnits(from: head[1]) else { return nil }
             return .setBankBalance(minor: minor)
+
+        case cardPrefix.lowercased():
+            // Signed the same way, and for a different reason: a card in credit is real too.
+            guard let minor = Money.signedMinorUnits(from: head[1]) else { return nil }
+            return .setCardBalance(minor: minor)
 
         case editPrefix.lowercased():
             return parseEdit(text)

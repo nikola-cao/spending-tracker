@@ -80,6 +80,10 @@ extension JournalLineOutcome {
                 parts.append("This line is a bank balance you set.")
                 parts.append("Deleting it removes that assertion, and the Bank figure is restated "
                              + "from the balance and deposits the journal still holds.")
+            case .setCardBalance:
+                parts.append("This line is a card balance you set.")
+                parts.append("Deleting it removes that assertion, and the Balance figure is "
+                             + "restated from the charges and payments the journal still holds.")
             case .edit:
                 parts.append("This line is an edit to a row you already had.")
                 parts.append("Deleting it undoes the change: the row goes back to what the line "
@@ -104,6 +108,18 @@ extension JournalLineOutcome {
             // figure as the one line whose confirmation stayed silent about it.
             if entries.contains(where: { $0.affectsBank }) {
                 parts.append("It moved the bank, so the Bank figure changes with it.")
+            }
+            // And the card, which is the same argument a second time — and, unlike the bank,
+            // this one covers charges. A charge is the commonest line in the journal by a wide
+            // margin, and it is the one that looks least like it changes anything: no money
+            // moved anywhere. But the Balance figure is folded from exactly these rows, so
+            // deleting one restates it, and a confirmation that stayed quiet about that would
+            // hide a figure moving behind a line that reads as pure bookkeeping.
+            //
+            // A payment gets both sentences, and should: it is the one movement that moves both.
+            if entries.contains(where: { $0.affectsCard }) {
+                parts.append("It changed what is owed on a card, so the Balance figure changes "
+                             + "with it.")
             }
 
         case .nothing:

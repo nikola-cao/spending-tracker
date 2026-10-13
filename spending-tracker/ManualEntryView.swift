@@ -76,7 +76,7 @@ struct ManualEntryView: View {
         case charge
         case deposit
         /// Paying a card off. Entered as the amount paid and stored negated, because its
-        /// effect — on the spend and on the bank — is to take that much away.
+        /// effect — on what is owed on the card, and on the bank — is to take that much away.
         case payment
 
         var id: String { rawValue }
@@ -423,8 +423,9 @@ struct ManualEntryView: View {
         onRecorded()
 
         if kind == .payment {
-            // The bank, not the balance. Both came down, but the balance is the month's figure
-            // and is not the parser's to state; the bank is the one folded from the journal.
+            // Names the bank, not the Balance — though a payment moves both, money out of the
+            // bank and the same amount off what is owed. The bank is the one with nowhere else
+            // to read it: the Balance is on the summary row directly behind this sheet.
             outcome = .recorded(
                 summary: "Paid \(formatted(magnitude(of: minor)))"
                     + " — bank now \(formatted(ledger.bankBalanceMinor))")

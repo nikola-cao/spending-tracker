@@ -92,7 +92,8 @@ nonisolated enum AmexPaymentParser {
               let amountText = amount(from: lines[labelIndex + 1]),
               // Stored as its effect. The figure Amex prints is what was paid; what the ledger
               // needs is what it took away, which is why a payment needs no subtraction
-              // anywhere downstream — see `ParsedAlert.affectsSpend`.
+              // anywhere downstream — both balance folds simply add it, and it comes off each
+              // by being negative. See `ParsedAlert.affectsBank` and `affectsCard`.
               let amountMinor = Money.minorUnits(from: amountText)
         else { return [] }
 

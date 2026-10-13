@@ -170,8 +170,13 @@ extension Txn {
 
     /// True when this row is a card being paid off.
     ///
-    /// The third kind, and the only one that comes off the spend *and* the bank: a charge is
-    /// owed, a deposit is money arriving, and a payment settles what was owed.
+    /// The third kind, and the only one that moves both balances: a charge is owed, a deposit is
+    /// money arriving, and a payment settles what was owed — money out of the bank, and the same
+    /// amount off the card.
+    ///
+    /// It is also the one kind that must **not** count as the month's spending, which is what
+    /// `spendingTotal` filters it out for. A payment settles spending that belongs to an earlier
+    /// month, so counting it here would make a heavy month read as light.
     var isPayment: Bool { kindRaw == ParsedAlert.Kind.payment.rawValue }
 
     /// A window of calendar months, newest first, ending with the one `date` falls in.
@@ -240,6 +245,45 @@ extension Txn {
                 return lhs.arrived > rhs.arrived
             }
             .map(\.txn)
+    }
+
+    /// What these rows cost — the sum behind the "This Month's Spending" figure.
+    ///
+    /// **A static on `Txn`, not a computed property on the view**, for the same reason
+    /// `inMonth` and `feedOrder` are: it is the arithmetic the screen is making a claim about,
+    /// and a claim that can only be checked by launching the app is a claim nothing checks.
+    /// Every figure in this app that has ever been wrong was wrong here, in a sum.
+    ///
+    /// **Payments are excluded**, and that is the whole difference between this and the card
+    /// balance. This answers "what did I spend"; that answers "what do I owe". They part company
+    /// the moment a card is paid off, because a payment settles spending that belongs to an
+    /// *earlier* month — most of a statement was spent in the month before it — so letting one
+    /// come off here would make a heavy month read as light because the previous month's bill
+    /// happened to be paid in this one.
+    ///
+    /// A refund is **not** excluded, because a refund is a negative charge: money the card gave
+    /// back on spending that did happen.
+    ///
+    /// A deposit counts only when it is negative — money that left the bank by some route that
+    /// is not a card, a Venmo sent to a person being the ordinary case. Money *arriving* is not
+    /// a negative cost, and folding it in would make a heavy month look cheap because someone
+    /// paid you back for rent.
+    ///
+    /// The sign has to be flipped for a deposit and not for anything else. A card row's sign
+    /// already **is** its contribution — a refund is stored negative and comes off. A deposit's
+    /// is not: it is stored signed by the direction the money went, so a Venmo you sent is a
+    /// negative number that has to be negated to read as what it cost. Summing the raw sign
+    /// would have made $200 leaving the bank *reduce* the month's spending by $200.
+    ///
+    /// Nothing carried in from an earlier month is included. This is the rows it is given, and
+    /// nothing else — which is what makes it the one figure on the screen that is the month
+    /// alone.
+    static func spendingTotal(_ txns: [Txn]) -> Int {
+        txns
+            .filter { !$0.isPayment && !($0.isDeposit && $0.amountMinor > 0) }
+            .reduce(0) { total, txn in
+                total + (txn.isDeposit ? -txn.amountMinor : txn.amountMinor)
+            }
     }
 
     /// For display only. `Decimal` avoids the float rounding that minor units exist to

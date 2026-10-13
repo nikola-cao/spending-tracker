@@ -265,7 +265,8 @@ final class spending_trackerUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        XCTAssertTrue(app.staticTexts["Balance"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["This Month's Spending"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Balance"].exists)
         XCTAssertTrue(app.staticTexts["Bank"].exists)
         XCTAssertTrue(app.staticTexts["Remaining"].exists)
     }

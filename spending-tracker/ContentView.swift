@@ -63,6 +63,12 @@ struct ContentView: View {
     /// re-drains, which is what makes a rebuild restore it.
     @State private var bankBalanceMinor = 0
 
+    /// What is owed on the cards, mirrored from the store the same way and for the same reason.
+    ///
+    /// Two mirrors rather than one net figure because they are two different claims: the store
+    /// folds them from separate lines and a change to either arrives here on its own.
+    @State private var cardBalanceMinor = 0
+
     @State private var isShowingJournal = false
     @State private var isShowingManualEntry = false
     @State private var isShowingDiagnostics = false
@@ -173,6 +179,7 @@ struct ContentView: View {
     private func refresh() {
         saveError = ledger.drain().saveError
         bankBalanceMinor = ledger.bankBalanceMinor
+        cardBalanceMinor = ledger.cardBalanceMinor
     }
 
     /// A refused write is the one failure that would otherwise render a complete-looking
@@ -228,64 +235,94 @@ struct ContentView: View {
 
     // MARK: - Total
 
-    /// What has been spent this calendar month.
+    /// What the month cost — everything that left, by whatever route it took.
     ///
-    /// Keyed on `occurredAt`, the best-known time of the purchase — the date printed in the
-    /// Amex email, and the alert's arrival for Fidelity, whose SMS carries no date at all.
-    /// Deliberately NOT `receivedAt`, which is when we heard about it; a charge that arrives
+    /// The month is `occurredAt`'s, the best-known time of the purchase: the date printed in
+    /// the Amex email, and the alert's arrival for Fidelity, whose SMS carries no date at all.
+    /// Deliberately NOT `receivedAt`, which is when we heard about it — a charge that arrives
     /// late still belongs to the month it was made in.
+    ///
+    /// Which rows count, and why, is `Txn.spendingTotal` — stated once, in the model, where a
+    /// test can reach it. This property is only the month, and the fact that it is the one
+    /// figure on this screen that is month-scoped at all.
     ///
     /// No charge count here. It was one line of redundancy with the list's own header, which
     /// states the same number directly above the rows it counts.
-    ///
-    /// Deposits are excluded. This figure is what the month *cost*, and a Zelle received is
-    /// not a negative cost — folding it in would make a month of heavy spending look cheap
-    /// because someone paid you back for rent. Refunds are a different thing and are not
-    /// excluded: a negative charge is money the card gave back on spending that did happen.
-    ///
-    /// Payments are included, and that is the whole reason they are their own kind. A payment
-    /// settles spending that already happened, so it comes off this figure — and it is stored
-    /// negative precisely so that summing the month works here without a special case.
-    private var monthSpendMinor: Int {
-        monthTransactions
-            .filter { !$0.isDeposit }
-            .reduce(0) { $0 + $1.amountMinor }
-    }
+    private var monthSpendingMinor: Int { Txn.spendingTotal(monthTransactions) }
 
     /// No month in the name any more. The section header that carried it is gone — the title at
     /// the top of the screen says which month this is, and saying it twice within two inches
     /// was the whole complaint.
-    private var monthSpend: String { formatted(monthSpendMinor) }
+    private var monthSpending: String { formatted(monthSpendingMinor) }
+
+    /// What is owed on the cards and not yet paid off, as the journal states it.
+    ///
+    /// Cumulative rather than month-scoped, and that is deliberate: a card balance is a
+    /// *position*, not an event. It is also what makes the rollover happen with no code written
+    /// for it — this month's figure is last month's, plus this month's charges, less this
+    /// month's payments, because that is simply what folding the journal says. Nothing is
+    /// carried across a month boundary by hand, so nothing can be carried wrongly.
+    ///
+    /// Derived, like `bankBalanceMinor` and for the same reason: it has to survive a rebuild.
+    /// See `LedgerStore.setCardBalance` for why a hand-set value is still the only way to state
+    /// it — the app knows what it saw charged, never what it missed.
+    private var cardBalance: String { formatted(cardBalanceMinor) }
 
     private var formattedBankBalance: String { formatted(bankBalanceMinor) }
 
-    /// The bank less what this month has cost — what is left, in the plainest sense.
+    /// The bank less what is owed on the cards — what you would have if you cleared them.
     ///
-    /// It moves for both halves without either being folded into the other: a charge that
-    /// lands lowers it, and so does a deposit leaving the bank, while money coming in raises
-    /// it. That is why the two figures above stay separate and this is derived from them
-    /// rather than the three being independent numbers that could drift apart.
+    /// Both halves are positions read at the same moment, which is what makes this a figure
+    /// rather than the difference between two things measured at different times.
     ///
-    /// Deposits reach it through the bank, not through the spend. A Zelle received is not a
-    /// negative cost, and counting it in the Balance would make a heavy month look cheap.
-    private var remaining: String { formatted(bankBalanceMinor - monthSpendMinor) }
+    /// It moves for both halves without either being folded into the other: a charge raises the
+    /// card balance and lowers this, money arriving raises the bank and this. A deposit leaving
+    /// the bank lowers it. And a payment lowers *both* at once, so it leaves this exactly where
+    /// it was — which is right, because settling a debt does not change what you have.
+    ///
+    /// Deposits reach it through the bank, never through the spend. A Zelle received is not a
+    /// negative cost, and counting it into the month's spending would make a heavy month look
+    /// cheap — see `Txn.spendingTotal`, which is where that rule actually lives.
+    private var remaining: String { formatted(bankBalanceMinor - cardBalanceMinor) }
 
     private func formatted(_ minor: Int) -> String {
         (Decimal(minor) / 100).formatted(.currency(code: "USD"))
     }
 
-    /// Three figures across: what has been spent this month, what is in the bank, and the
-    /// difference between them.
+    /// The month's spending stated on its own, and beneath it the three positions.
     ///
-    /// Three equal columns rather than spacers, because `Remaining` is a peer of the other two
-    /// and not an afterthought hanging off the right edge.
-    ///
-    /// The type is one step down from the two-figure version. Three currency strings do not fit
-    /// across an iPhone at `.title`, and shrinking all three is better than shrinking one.
+    /// Its own row rather than a fourth column, because it answers a different kind of question
+    /// from the three below. Those are where you stand; this is what happened. Three of them are
+    /// peers of each other and the fourth is not, and four currency strings across an iPhone
+    /// would not fit — shrinking all four to force it would cost the three that belong together
+    /// for the sake of the one that does not.
     private var totalSpendSection: some View {
         Section {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(monthSpending)
+                    .font(.largeTitle.weight(.semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Text("This Month's Spending")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+
+            // Three equal columns rather than spacers, because `Remaining` is a peer of the
+            // other two and not an afterthought hanging off the right edge.
+            //
+            // The type is one step down from the two-figure version. Three currency strings do
+            // not fit across an iPhone at `.title`, and shrinking all three is better than
+            // shrinking one.
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                summaryFigure(title: "Balance", value: monthSpend, alignment: .leading)
+                // Deliberately not a control, unlike Bank beside it. The card balance is set the
+                // same way the bank balance is — by writing a line into the raw journal — but
+                // there is no sheet behind this one, so a tap here would open nothing. A figure
+                // that looks tappable and is not is worse than one that plainly is not.
+                summaryFigure(title: "Balance", value: cardBalance, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 // The bank balance is the only figure that can be edited, so it is the only one
@@ -743,7 +780,11 @@ struct JournalView: View {
     private func note(for outcome: JournalLineOutcome, rows: Int) -> String {
         switch outcome {
         case .instruction(.setBankBalance):
-            return "Balance line deleted. The Bank figure is restated from what is left."
+            // Says "Bank balance", not "Balance". That word now names the card figure on the
+            // summary row, so the old wording would have been a note about the wrong one.
+            return "Bank balance line deleted. The Bank figure is restated from what is left."
+        case .instruction(.setCardBalance):
+            return "Card balance line deleted. The Balance figure is restated from what is left."
         case .instruction(.edit):
             return "Edit line deleted. The row it changed reads as the original line said."
         case .movement where rows > 1:

@@ -32,6 +32,39 @@ struct JournalInstructionTests {
         #expect(JournalInstructionParser.parse(text) == nil, "accepted \(text)")
     }
 
+    // MARK: - The card balance
+
+    @Test(arguments: [0, 24_000, -12_050, 100_000_000_000])
+    func everyCardBalanceRoundTrips(_ minor: Int) {
+        let line = JournalInstructionParser.composeCardBalance(minor)
+        #expect(JournalInstructionParser.parse(line) == .setCardBalance(minor: minor), "\(line)")
+    }
+
+    @Test func aCardLineIsRecognisableByEye() {
+        #expect(JournalInstructionParser.composeCardBalance(24_000) == "Card | 240.00")
+    }
+
+    /// A card in credit is a real balance rather than a typo, which is why this line is signed
+    /// like the bank one. It is also the sign the charge rows carry, so a typed balance and the
+    /// charges it supersedes cannot disagree about which way round the number goes.
+    @Test func aNegativeCardBalanceIsACreditAndNotARejection() {
+        #expect(JournalInstructionParser.parse("Card | -120.50") == .setCardBalance(minor: -12_050))
+    }
+
+    @Test(arguments: ["Card", "Card |", "Card | abc", "Card | 2,50", "CARD | 1.00 | x"])
+    func malformedCardLinesAreRejected(_ text: String) {
+        #expect(JournalInstructionParser.parse(text) == nil, "accepted \(text)")
+    }
+
+    /// The two balances are told apart by their leading word and by nothing else, so a line
+    /// written for one must never be read as the other. A `Card` line that set the bank — or a
+    /// `Bank` line that set what is owed — would be a wrong figure with a correct-looking line
+    /// in the journal behind it, which is the worst shape a bug can take here.
+    @Test func theTwoBalanceLinesAreNotInterchangeable() {
+        #expect(JournalInstructionParser.parse("Bank | 10.00") == .setBankBalance(minor: 1_000))
+        #expect(JournalInstructionParser.parse("Card | 10.00") == .setCardBalance(minor: 1_000))
+    }
+
     // MARK: - Edits
 
     @Test func anEditRoundTrips() throws {

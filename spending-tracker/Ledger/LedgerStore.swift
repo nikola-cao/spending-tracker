@@ -60,6 +60,16 @@ final class LedgerStore {
     /// it means writing a line, which is what `setBankBalance` and a deposit both do.
     private(set) var bankBalanceMinor = 0
 
+    /// What is owed on the cards, as the journal states it.
+    ///
+    /// Derived exactly like the bank balance and read-only for the same reason. The difference
+    /// is what feeds it: the bank moves for deposits and payments, this moves for charges and
+    /// payments — a charge is owed on a card and never touches the bank until it is paid.
+    ///
+    /// Positive means owed, which is the sign the rows themselves carry, so a `Card |` line and
+    /// the summing of the charges it supersedes cannot disagree about which way round it goes.
+    private(set) var cardBalanceMinor = 0
+
     init(container: ModelContainer, journalURL: URL = JournalLocation.fileURL) {
         self.container = container
         self.journalURL = journalURL
@@ -85,6 +95,11 @@ final class LedgerStore {
 
         let instructions = Self.instructions(from: records)
         refreshBankBalance(derived: instructions.bank, records: records)
+        // No adoption branch and no legacy handover, unlike the bank above: a card balance has
+        // only ever lived in the journal, so there is nothing from an earlier version of the app
+        // to carry over — and therefore no way for a stale value to reappear once its last line
+        // is deleted.
+        cardBalanceMinor = instructions.card ?? 0
 
         if !records.isEmpty {
             ingest(records, into: context, result: &result)
@@ -132,6 +147,28 @@ final class LedgerStore {
         drain()
     }
 
+    /// Sets the card balance by writing a line, so a rebuild can restore it.
+    ///
+    /// The same shape as `setBankBalance` and for the same reasons. The number is an assertion
+    /// about the world rather than a movement of money, so it is a line of its own and not an
+    /// enormous charge; and the store is derived, so a figure not written here is gone at the
+    /// next rebuild with nothing to restore it from.
+    ///
+    /// Positive means owed, matching the sign the charge rows already carry. A card in credit is
+    /// a real state and takes a leading minus.
+    func setCardBalance(_ minor: Int) throws {
+        try JournalStore.append(
+            .diagnostic(
+                runID: UUID(),
+                phase: JournalRecord.capturePhase,
+                raw: JournalInstructionParser.composeCardBalance(minor),
+                note: JournalRecord.manualMarker
+            ),
+            to: journalURL
+        )
+        drain()
+    }
+
     /// The balance the journal describes: the last value set, plus every deposit since.
     ///
     /// **Derived, never stored.** It used to live in `UserDefaults`, which meant it survived a
@@ -144,15 +181,29 @@ final class LedgerStore {
     /// gives the money back with no extra bookkeeping — the fold simply sees one fewer.
     /// Everything the journal says beyond "here is a row", gathered in one pass.
     ///
-    /// The balance and the edits are collected together because both need the same walk in the
-    /// same order, and the order is the whole point: an edit line means what it means because
-    /// of where it sits relative to the line it supersedes.
+    /// Both balances and the edits are collected together because all three need the same walk
+    /// in the same order, and the order is the whole point: an edit line means what it means
+    /// because of where it sits relative to the line it supersedes.
+    ///
+    /// The two balances are folded in one pass rather than two, because the pass is the same
+    /// and only the predicate differs — and two passes over the same records is two chances for
+    /// them to disagree about which lines counted.
     private static func instructions(
         from records: [JournalRecord]
-    ) -> (bank: Int?, edits: [JournalInstruction.Edit]) {
+    ) -> (bank: Int?, card: Int?, edits: [JournalInstruction.Edit]) {
+        // Collapsed by invocation, exactly as `ingest` collapses it — and this was a latent bug
+        // until the card balance arrived. One invocation used to write an `enter` and a `result`
+        // line carrying the SAME body, and this walk re-parses every line it is handed, so a
+        // charge captured back then is summed TWICE unless the pair is collapsed. A card balance
+        // reading double the feed it sits above is precisely the plausible-looking wrong total
+        // this ledger is built to make impossible. It went unnoticed because the only kinds the
+        // fold used to sum were deposits and payments, which postdate the pair entirely.
+        var seenInvocations = Set<UUID>()
         let lines = records.compactMap { record -> (runID: UUID, body: String)? in
             let body = record.trimmedBody
-            return body.isEmpty ? nil : (record.runID, body)
+            guard !body.isEmpty else { return nil }
+            guard seenInvocations.insert(record.runID).inserted else { return nil }
+            return (record.runID, body)
         }
 
         // The edits are gathered first, because one may supersede a deposit that sits *earlier*
@@ -169,26 +220,33 @@ final class LedgerStore {
             edits.map { ($0.occurrenceKey, $0.amountMinor) }, uniquingKeysWith: { _, last in last })
 
         var bank: Int?
+        var card: Int?
         for line in lines {
             switch JournalInstructionParser.parse(line.body) {
             case .setBankBalance(let minor)?:
                 bank = minor
+            case .setCardBalance(let minor)?:
+                card = minor
             case .edit?:
                 continue
             case nil:
-                // Not an instruction, so it is an alert. A charge never touches the bank — it
-                // is owed on a card, not yet paid for — but a deposit and a payment both do,
-                // and both are stored already signed by the direction the money went.
-                for (index, alert) in AlertParsers.parseAll(line.body).enumerated()
-                where alert.affectsBank {
+                // Not an instruction, so it is an alert — and each kind moves the position it
+                // actually moves. A charge is owed on a card and never touches the bank until it
+                // is paid; a deposit is the bank and never a card; a payment is the one movement
+                // that is both, settling a card with money out of the bank.
+                for (index, alert) in AlertParsers.parseAll(line.body).enumerated() {
                     // Keyed exactly as the ingest keys it, so an edit reaches the right line.
-                    // An edit naming a charge simply never matches anything here.
+                    // The lookup is shared rather than repeated per position because one edit
+                    // can move both — editing a payment's amount moves the bank and the card by
+                    // the same corrected figure, which is the whole reason it is one value here.
                     let key = "\(line.runID.uuidString)#\(index)"
-                    bank = (bank ?? 0) + (editedAmounts[key] ?? alert.amountMinor)
+                    let amount = editedAmounts[key] ?? alert.amountMinor
+                    if alert.affectsBank { bank = (bank ?? 0) + amount }
+                    if alert.affectsCard { card = (card ?? 0) + amount }
                 }
             }
         }
-        return (bank, edits)
+        return (bank, card, edits)
     }
 
     /// Replays every edit, in journal order, onto the rows they name.

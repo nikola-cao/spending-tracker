@@ -52,10 +52,11 @@ structural rather than conventional — a forgotten predicate is exactly how an 
 would silently pollute a total, and a wrong total is invisible.
 
 Charges and deposits share the table and are told apart by `isDeposit`. The feed shows both,
-because both are things that happened. **The month total counts charges only** — a Zelle you
+because both are things that happened. **The month total counts what left** — a Zelle you
 received is not a negative cost, and folding it in would make a heavy month look cheap because
 someone paid you back for rent. A refund is a different thing and is *not* excluded: it is a
-negative charge, money the card gave back on spending that did happen.
+negative charge, money the card gave back on spending that did happen. A payment is excluded
+too, and it is the one exclusion that is not about direction — see *The summary* below.
 
 **Dedup keys on the invocation, not the message.** This matters more than it looks: a
 Fidelity body is a pure function of (card, amount, merchant) — no transaction id, no
@@ -112,8 +113,8 @@ took, since the row is the only record that the money ever moved.
 
 ### One month at a time
 
-The feed and the Balance figure show the **current calendar month** and nothing else. The list
-header names the month, and the total header has always.
+The feed and the **This Month's Spending** figure show the **current calendar month** and nothing
+else. The list header names the month, and the total header has always.
 
 **A filter, never a deletion.** Every row stays in the store, so the month rolling over costs
 nothing and loses nothing. That is what makes a previous-months view a query rather than a
@@ -128,20 +129,50 @@ happens on the first render after midnight on the 1st — no timer, no backgroun
 nothing that can get out of step. (It does mean an app left open across midnight keeps showing
 the old month until something re-renders it; switching away and back is enough.)
 
-The **bank balance is untouched** by all of this. It is folded from the whole journal, not from
+The **balances are untouched** by all of this. Both are folded from the whole journal, not from
 the rows on screen, so a deposit from a month the list is no longer showing is still money that
 moved.
 
-### Remaining
+And that is the whole of the rollover, which is worth saying because it is the thing most likely
+to be looked for and not found. Nothing is carried across a month boundary by hand, because a
+position does not *have* a month. November opens on October's card balance plus November's
+charges, because that is simply what summing the journal says.
 
-The summary row is three figures: **Balance** (this month's charges), **Bank**, and **Remaining**
-— the bank less the spend.
+### The summary
 
-Remaining is derived from the other two rather than being a third number kept alongside them,
-so the three cannot drift apart. It moves for both halves: a charge lowers it, money arriving
-raises it.
+Four figures, and they are two different kinds of thing.
 
-Deposits reach it through the bank and not through the spend, which is the same rule as
+**This Month's Spending** is the month alone: charges and refunds, plus deposits that are
+negative — money that left the bank by some route that is not a card, a Venmo sent to a person
+being the ordinary case.
+
+**Payments do not come off it**, and that exclusion is the point of the figure. A payment settles
+spending that belongs to an *earlier* month — most of a statement was spent in the month before
+it — so letting one come off here would make a heavy month read as light because the previous
+month's bill happened to be paid in this one. It is also why the arithmetic flips the sign of a
+deposit and nothing else: a card row's sign already *is* its contribution, while a deposit is
+stored signed by the direction the money went.
+
+The other three are **positions**, all read at the same moment, and none of them is scoped to the
+month:
+
+| | |
+|---|---|
+| **Balance** | what is owed on the cards and not yet paid off |
+| **Bank** | what is in the bank |
+| **Remaining** | the bank less the Balance — what you would have if you cleared the cards |
+
+Remaining is derived from the other two rather than being a third number kept alongside them, so
+the three cannot drift apart. It moves for both halves without either being folded into the
+other: a charge raises Balance and lowers Remaining, money arriving raises the bank and
+Remaining, a deposit leaving the bank lowers Remaining.
+
+A payment lowers **both** Balance and the bank by the same amount, so it leaves Remaining exactly
+where it was — which is right, because settling a debt does not change what you have. That
+property is the reason a payment is stored negative rather than being its own special case in
+the fold.
+
+Deposits reach Remaining through the bank and not through the spend, which is the same rule as
 everywhere else — a Zelle received is not a negative cost, and counting it as one would make a
 heavy month look cheap.
 
@@ -149,14 +180,37 @@ The empty state distinguishes the two cases on purpose. "Nothing in October yet"
 store behind it reads very differently from "No transactions yet" — and the first of the month
 is exactly when getting that wrong would look like everything had been thrown away.
 
-### The bank balance is derived, not stored
+### Both balances are derived, not stored
 
-It is **not** a field anywhere. Setting it writes a line to the raw journal, and the balance is
-then folded out of that file: the last value set, plus every deposit after it.
+Neither is a field anywhere. Setting one writes a line to the raw journal, and the balance is
+then folded out of that file: the last value set, plus every movement after it.
 
 ```
 Bank | 1200.00
+Card | 240.00
 ```
+
+The bank moves for deposits and payments; the card moves for charges and payments. A charge is
+owed on a card and never touches the bank until it is paid, which is why there are two folds
+rather than one net figure — and why the predicate is written out as a positive list of kinds in
+each case, rather than as "anything that is not a deposit". That shorter form reads as the
+obvious thing to write and is **true of an unrecognised verb**, which resolves to no row at all:
+a declined alert would have raised the card balance by an amount the feed never showed, and then
+dropped it again a week later when the retention window purged the line it came from.
+
+`Card | 240.00` reads as **240.00 owed**. Positive-is-owed is the sign the rows themselves carry
+— a charge is stored positive, a payment negative — so a typed balance and the charges it
+supersedes cannot disagree about which way round the number goes. A card in credit is a real
+state and takes a leading minus, exactly as an overdrawn account does.
+
+It exists for the same reason the bank line does, and it is worth saying plainly: **the app
+cannot work out what is owed.** It knows what it has *seen* charged, and this ledger is
+incomplete by construction — nothing from before the app was installed, a source that only
+alerts above a floor, and alerts that never arrived. What those gaps add up to is not derivable
+from anything here. This line is the only place it can be said.
+
+The card balance has no `UserDefaults` history and therefore no adoption branch — the bank's is
+below, and it is a cautionary tale rather than a pattern to copy.
 
 That is the same bargain everything else here makes, and it was not always kept. The balance
 used to live in `UserDefaults`, which meant it survived a rebuild only by accident — the journal
@@ -392,9 +446,10 @@ currency parser, which is what makes a permissive fragment test safe.
 > **A fourth kind (2026-10-03).** Paying a card off, from Amex's payment confirmation or by
 > hand.
 
-A payment is its own kind, not a large deposit, because it is the one movement that comes off
-**both** figures: **Balance**, because it settles spending that already happened, and **Bank**,
-because the money left it.
+A payment is its own kind, not a large deposit, because it is the one movement that touches
+**both** balances: **Balance**, because it settles a debt that was owed, and **Bank**, because
+the money left it. It is also the one movement that must *not* touch the month — see
+*The summary*.
 
 It is stored as its **effect**, so the amount is negative even though the figure a person types
 is what they paid:
@@ -403,9 +458,13 @@ is what they paid:
 Manual | payment | -825.77 | 2026-10-03 |  | AMEX PAYMENT
 ```
 
-That keeps both summaries free of special cases. The bank fold takes every row that affects the
-bank, and the spend takes everything that is not a deposit — so a payment reduces both by
-simply being summed.
+That keeps the arithmetic free of special cases. A payment is the one movement that touches both
+balances — money out of the bank, and the same amount off what is owed — so it is summed into
+each by the fold that folds it, with no branch anywhere that has to know it is a payment.
+
+It is also the whole reason "This Month's Spending" and Balance are two figures rather than one.
+A payment comes off Balance, because it settles a debt, and does not come off the month, because
+the debt it settled was not this month's.
 
 In the feed a payment is **red**, where money arriving is green and everything else is ordinary.
 The payment arm is checked first, and is not a special case of the other two: `isMoneyIn` asks
@@ -480,10 +539,11 @@ disappeared would be wrong in exactly the place the user is being asked to trust
 
 | The line | What deleting it does |
 |---|---|
-| A charge, a deposit, or a payment | Removes the transaction it recorded, and the line. A deposit or a payment also moves the Bank figure back, because the balance is folded from the journal. |
+| A charge, a deposit, or a payment | Removes the transaction it recorded, and the line. A charge or a payment also restates the Balance figure, and a deposit or a payment the Bank figure, because both are folded from the journal. A payment moves both. |
 | One message carrying two alerts | Removes both transactions. They share the line, so there is no way to remove one and keep the other. |
 | An `enter`/`result` pair from an older journal | Removes both halves. They share a `runID`, and leaving one would rebuild the row on the next drain. |
 | A `Bank` line | The Bank figure is restated from the balance and deposits or payments still in the journal. |
+| A `Card` line | The Balance figure is restated from the charges and payments still in the journal. |
 | An `Edit` line | The row it changed reverts. An edit names a row rather than being one, so the row is re-derived from the original line and every edit still standing is replayed onto it. |
 | A body that recorded nothing | Just the line. Nothing in the ledger changes — and this is where the week-long recovery window is given up early. Unless the store still holds a row for it, which happens when a body an earlier parser recorded no longer reads as a movement — then that row goes too, and the confirmation says so. |
 
@@ -790,7 +850,7 @@ xcodebuild -project spending-tracker.xcodeproj -scheme spending-tracker \
 spending-tracker/
   Journal/          append-only JSONL journal, runtime diagnostics, launch log
   Intents/          LogTransactionIntent — the only App Intent
-  ContentView.swift the charge feed, month total, and swipe-to-delete
+  ContentView.swift the charge feed, the summary figures, and swipe-to-delete
 ```
 
 New `.swift` files are picked up automatically — the project uses

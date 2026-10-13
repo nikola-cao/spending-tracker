@@ -25,7 +25,9 @@ nonisolated struct ParsedAlert: Sendable, Equatable {
         case charge
         case deposit
         /// Paying a card off. Its own kind rather than a large deposit, because it is the one
-        /// movement that comes off the *spend* as well as the bank — see `affectsSpend`.
+        /// movement that touches both balances — money out of the bank, and the same amount off
+        /// what is owed — while coming off neither month's spending. See `affectsBank` and
+        /// `affectsCard`.
         case payment
         case unrecognizedVerb
 
@@ -83,12 +85,18 @@ nonisolated struct ParsedAlert: Sendable, Equatable {
     /// it is the money actually leaving the bank to settle one.
     var affectsBank: Bool { kind == .deposit || kind == .payment }
 
-    /// Whether this counts against the month's spend.
+    /// Whether this changes what is owed on a card.
     ///
-    /// A deposit does not: a Zelle received is not a negative cost. A payment does, because it
-    /// settles spending that already happened — which is why it *reduces* the figure rather
-    /// than adding to it, and why it is stored as a negative amount.
-    var affectsSpend: Bool { kind != .deposit }
+    /// A charge raises it, a payment takes it down, and a deposit never touches a card at all.
+    ///
+    /// **Written as a positive list, like `affectsBank` above, and that is load-bearing.** The
+    /// obvious shorter form is `kind != .deposit`, which is *true* for `.unrecognizedVerb` — a
+    /// kind that resolves to no row at all. That form would have let a declined alert fold into
+    /// the card balance: the figure would rise by an amount the feed never showed, and then fall
+    /// again a week later when the retention window purged the line it came from, with no row
+    /// ever having changed. Naming the kinds that count is what makes that unreachable rather
+    /// than merely unlikely.
+    var affectsCard: Bool { kind == .charge || kind == .payment }
 
     /// Whether this alert becomes a ledger row.
     ///
