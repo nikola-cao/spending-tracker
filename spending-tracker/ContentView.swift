@@ -510,12 +510,35 @@ struct JournalView: View {
     let onChanged: () -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var records: [JournalRecord] = []
+
+    /// Everything the file holds: the records, and — separately — the lines that could not be
+    /// read back. Kept as one value rather than as two `@State` arrays because they are two
+    /// halves of one read, and two reads can disagree.
+    @State private var journal = JournalRead()
 
     /// The line a swipe is asking about. The swipe is not the decision: this screen destroys
     /// the app's source of truth, and the dialog is the one place the user is told what else
     /// goes with the line they picked.
-    @State private var pendingDeletion: JournalRecord?
+    ///
+    /// One dialog for both kinds of line. A damaged line is not a `JournalRecord` — nothing can
+    /// read it — but it is a line of the same file, removed by the same swipe, and two dialogs
+    /// with two sets of words for one gesture would be two things to keep in step.
+    @State private var pendingDeletion: PendingDeletion?
+
+    enum PendingDeletion: Identifiable {
+        case record(JournalRecord)
+
+        /// A line nothing can read, addressed by the bytes it holds. The same identity the
+        /// deletion uses, since a position in the file is not a name that survives a rewrite.
+        case damaged(Data)
+
+        var id: String {
+            switch self {
+            case .record(let record): record.id.uuidString
+            case .damaged(let bytes): "damaged-\(bytes.count)-\(bytes.hashValue)"
+            }
+        }
+    }
 
     @State private var errorMessage: String?
     @State private var note: String?
@@ -523,7 +546,7 @@ struct JournalView: View {
     var body: some View {
         // Bound once, exactly as the feed binds its rows, so the offsets a swipe reports can
         // only ever be resolved against the array that was actually drawn.
-        let shown = Array(records.reversed())
+        let shown = Array(journal.records.reversed())
 
         return List {
             Section {
@@ -560,14 +583,37 @@ struct JournalView: View {
                     // The row stays on screen: nothing is removed until the dialog is
                     // confirmed, so a cancelled swipe leaves the journal exactly as it was.
                     guard let index = offsets.first, shown.indices.contains(index) else { return }
-                    pendingDeletion = shown[index]
+                    pendingDeletion = .record(shown[index])
                 }
             } header: {
-                Text("\(records.count) lines · newest first")
+                Text("\(journal.records.count) lines · newest first")
             } footer: {
                 Text("Swipe a line to delete it. The ledger is rebuilt by replaying this file, so "
                      + "a line and the transaction it recorded go together — a row whose line is "
                      + "gone would only come back.")
+            }
+
+            // Last, not first: a damaged line has no timestamp, and a torn write is the tail of
+            // the file in every case that has been seen. Shown at all because not showing it is
+            // what made "written and unreadable" look exactly like "never arrived".
+            if !journal.damaged.isEmpty {
+                Section {
+                    ForEach(journal.damaged, id: \.self) { bytes in
+                        DamagedRow(bytes: bytes)
+                    }
+                    .onDelete { offsets in
+                        guard let index = offsets.first,
+                              journal.damaged.indices.contains(index) else { return }
+                        pendingDeletion = .damaged(journal.damaged[index])
+                    }
+                } header: {
+                    Text("\(journal.damaged.count) damaged · cannot be read")
+                } footer: {
+                    Text("These lines are in the file and cannot be decoded — an append that was "
+                         + "interrupted, or a record shape from another version of the app. No "
+                         + "transaction was derived from them and nothing else records what they "
+                         + "held. Swipe to remove one.")
+                }
             }
         }
         .navigationTitle("Raw journal")
@@ -586,25 +632,73 @@ struct JournalView: View {
             ),
             titleVisibility: .visible,
             presenting: pendingDeletion
-        ) { record in
+        ) { pending in
             // Deliberately not "Delete": the swipe action behind this dialog already owns that
             // label, and two buttons with one name is a coin toss for a person and ambiguous
             // for anything reading the screen.
-            Button("Delete line", role: .destructive) { delete(record) }
+            Button("Delete line", role: .destructive) { delete(pending) }
             Button("Cancel", role: .cancel) { pendingDeletion = nil }
-        } message: { record in
-            // What else goes is read from the STORE, not from the text. The two can disagree:
-            // a body that parsed when it was ingested and no longer does still owns its row,
-            // and the copy must not promise otherwise.
-            Text(record.outcome.message(storedRows: ledger.rowsRecorded(by: record)))
+        } message: { pending in
+            switch pending {
+            case .record(let record):
+                // What else goes is read from the STORE, not from the text. The two can disagree:
+                // a body that parsed when it was ingested and no longer does still owns its row,
+                // and the copy must not promise otherwise.
+                Text(record.outcome.message(storedRows: ledger.rowsRecorded(by: record)))
+            case .damaged(let bytes):
+                Text(Self.damagedMessage(bytes))
+            }
         }
     }
 
-    private func reload() {
-        records = JournalStore.readAll(from: JournalLocation.fileURL)
+    /// What deleting a damaged line takes away: nothing derived, and the only copy of whatever
+    /// the bytes hold.
+    ///
+    /// Worded so nobody waits for a transaction to disappear — this is precisely the case where
+    /// there is none, and a confirmation that hinted otherwise would be the one place the app
+    /// misdescribes what it is holding.
+    private static func damagedMessage(_ bytes: Data) -> String {
+        "This line is in the journal and cannot be decoded, so nothing in the ledger was ever "
+        + "derived from it and no transaction changes. It is the only copy of the "
+        + "\(bytes.count) bytes it holds. This cannot be undone."
     }
 
-    private func delete(_ record: JournalRecord) {
+    private func reload() {
+        journal = JournalStore.read(from: JournalLocation.fileURL)
+    }
+
+    private func delete(_ pending: PendingDeletion) {
+        switch pending {
+        case .record(let record): deleteRecordLine(record)
+        case .damaged(let bytes): deleteDamagedLine(bytes)
+        }
+    }
+
+    /// The one deletion with only a journal half: nothing could read the line, so nothing was
+    /// ever derived from it and there is no row to remove.
+    private func deleteDamagedLine(_ bytes: Data) {
+        pendingDeletion = nil
+        errorMessage = nil
+        note = nil
+
+        do {
+            let result = try ledger.deleteDamagedLine(bytes)
+            reload()
+            onChanged()
+            note = result.lines > 0
+                ? "Damaged line deleted. Nothing in the ledger was derived from it — nothing "
+                    + "could read it."
+                : "Nothing was deleted."
+        } catch {
+            // The journal could not be rewritten, so the line is still there — reload rather
+            // than leave the screen showing what it showed before the attempt.
+            reload()
+            onChanged()
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func deleteRecordLine(_ record: JournalRecord) {
         let outcome = record.outcome
         pendingDeletion = nil
         errorMessage = nil
@@ -673,6 +767,18 @@ struct JournalView: View {
 private struct JournalRow: View {
     let record: JournalRecord
 
+    /// True when this line was not written by this app, into this app's own container.
+    ///
+    /// Every line records the process that wrote it and the journal directory it went to, for
+    /// exactly this: a write that landed somewhere the app cannot read is the one failure that
+    /// loses an alert with no other trace anywhere. Nothing rendered those fields until now,
+    /// which made an instrument that could not be read — the answer was in the file, and
+    /// unreachable from the phone.
+    private var writtenElsewhere: Bool {
+        record.processName != RuntimeFacts.processName()
+            || record.journalDirectory != JournalLocation.directoryPath
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
@@ -682,12 +788,51 @@ private struct JournalRow: View {
                 Text(record.receivedAt, format: .dateTime.hour().minute().second())
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if writtenElsewhere {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Color.red)
+                }
                 Spacer()
+                Text(record.processName)
+                    .font(.caption)
+                    .foregroundStyle(writtenElsewhere ? Color.red : Color.secondary)
                 Text("\(record.charCount) ch")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Text(record.rawText).font(.footnote.monospaced())
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// A line that is in the journal and cannot be read back.
+///
+/// Shown rather than hidden, and that is the whole point of the row. Dropping it from the read
+/// was what made **"a line was written and cannot be decoded"** — the one state where a
+/// transaction disappears with no trace on any screen — look exactly like **"no alert ever
+/// arrived"**. The bytes are printed lossily on purpose: they are the evidence, and a preview
+/// that refused to print them would hide the only thing this row exists to show.
+private struct DamagedRow: View {
+    let bytes: Data
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(Color.orange)
+                Text("Damaged line")
+                    .font(.caption.weight(.medium))
+                Spacer()
+                Text("\(bytes.count) bytes")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(String(decoding: bytes.prefix(400), as: UTF8.self))
+                .font(.footnote.monospaced())
+                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
     }

@@ -13,6 +13,15 @@ struct spending_trackerApp: App {
     private let ledger: LedgerStore
 
     init() {
+        // First thing, and before the store is built: this is a record that the app's process
+        // RAN, which is the whole question when an alert goes missing. `App.init` runs for a
+        // background launch servicing the capture intent exactly as it does for a launch by
+        // hand, so a window with an arriving alert and no launch in it says the intent was never
+        // given the chance to run — the failure the README warns about and nothing else in the
+        // app could show. Stamped ahead of `makeContainer` deliberately: the launch happened
+        // even if building the store then went badly.
+        LaunchLog.record()
+
         let container = Self.makeContainer()
         self.container = container
         self.ledger = LedgerStore(container: container)

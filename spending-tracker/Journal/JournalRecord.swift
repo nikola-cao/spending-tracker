@@ -69,6 +69,17 @@ extension JournalRecord {
     /// pair per alert; see the note on `phase`.
     nonisolated static let capturePhase = "capture"
 
+    /// The body with its surrounding whitespace removed.
+    ///
+    /// The form every reader wants, and the one four call sites used to spell out for
+    /// themselves: the drain, the retention purge, the balance fold, and the classification the
+    /// Raw journal screen shows. One owner, so they cannot drift into disagreeing about what
+    /// counts as an empty body — which is the difference between "the Shortcut handed over
+    /// nothing" and "there is something here".
+    nonisolated var trimmedBody: String {
+        rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Explicitly `nonisolated` — the type's isolation does not propagate into an extension.
     nonisolated static func diagnostic(
         runID: UUID,

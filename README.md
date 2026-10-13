@@ -265,12 +265,56 @@ correctly rejects, breaking the round trip.
 
 ## Diagnostics
 
-Under the **⋯** menu. Answers the two questions no other screen can — *is the automation
-still capturing*, and *is anything arriving the parser can't read*. Both failures are
-otherwise silent: the Shortcut keeps firing, or the alert is simply absent.
+Under the **⋯** menu. Answers the three questions no other screen can — *is the automation
+still capturing*, *is anything arriving the parser can't read*, and *has this app's process run
+at all*. All three failures are otherwise silent: the Shortcut keeps firing, the alert is
+simply absent, or a line is in the journal that nothing can decode.
 
-Shows last captured, last manual entry, counts of alerts and charges, the parser version in
-force, and the journal's size. The journal can be shared out from here.
+Shows last captured, last manual entry, the app's recent launches, counts of alerts and charges,
+bodies held, empty invocations, the parser version in force, the journal's size and its damaged
+lines. The journal can be shared out from here.
+
+### Reading a missing alert
+
+An alert that never appears has several possible causes, and they are otherwise impossible to
+tell apart from the phone. The screen — plus the notification the sub-shortcut posts — separates
+them:
+
+| What you see | What it was |
+|---|---|
+| No launch beside the time, and **Last captured** older than the alert | the intent never ran: iOS could not launch the app |
+| A launch listed, no new line, and no `ST1 …` notification | the Shortcut failed on the way to the intent |
+| A notification reading `ST1 FAIL\|…` | the append threw — the text after it says which call failed |
+| The line is there and **Held, not a movement** went up | captured, and the parser read nothing in it |
+| A line under **N damaged** | captured, and the line it went into cannot be decoded |
+
+**The notification is the only writer-side evidence there is.** The sub-shortcut's
+`Show Notification` posts the intent's own result —
+`ST1 ok|spending-tracker|main:0|chars:231|rx:1|fid:1|grp:0` — and its *absence* is itself a
+finding, because `perform()` writes the journal line **before** it returns anything at all. A
+missing line together with a missing string means the intent never ran; a line that is there
+means it did, and the loss is on the read side. The fields are described under **Reading the
+diagnostic**.
+
+### The app has to run for anything to be captured
+
+`LogTransactionIntent` is pinned to the app's own process (`allowedExecutionTargets = [.main]`)
+and there is deliberately no extension target, so **the only way an alert can reach the journal
+is for iOS to launch spending-tracker**. When iOS will not — an app force-quit in the App
+Switcher, an install never opened by hand, a lapsed free-Apple-ID profile — the Shortcut still
+fires and nothing is written at all.
+
+That is precisely the failure no other screen could show, because *Last captured* cannot tell it
+apart from a quiet week. So every launch stamps a small ring in `UserDefaults`, and Diagnostics
+lists the recent ones. A background launch servicing an alert is recorded exactly like one made
+by hand, so **an alert that went missing in a window with no launch beside it means the intent
+never got the chance to run.**
+
+It is in `UserDefaults` rather than the journal, and that is the one exception to the rule that
+everything the app knows lives in the file. The journal is the record of what *arrived* — the
+money, the evidence, the thing a rebuild restores. This records the app's own process: nothing
+is derived from it, no figure depends on it, and a line per foreground would put the app's own
+noise into the one file that has to stay readable as a record of what the sources sent.
 
 ## Venmo
 
@@ -457,6 +501,49 @@ delete can simply be retried; if it lands and the store refuses the save, the ro
 screen and the feed can finish the job. The reverse order fails the other way — a row that
 vanishes and then silently returns on the next drain, which reads as the app undoing a delete
 rather than as a failed write.
+
+#### A line that cannot be read is shown, not dropped
+
+`JournalStore.read` returns the records **and** the lines it could not decode. It did not
+always, and the difference is the whole of this subsection: a line that failed to decode was
+dropped, which made *"a line arrived and cannot be read"* indistinguishable from *"no line ever
+arrived"* — on the Raw journal screen, in the drain, and in Diagnostics, because all three read
+through the same function. The store is derived from this file, so that difference is a
+transaction that exists or one that does not, and nothing else in the app can tell you which.
+
+Two things produce one: a write interrupted by a kill (the process servicing an alert in the
+background can be suspended the moment `perform()` returns), and a record shape from another
+version of the build. Both leave bytes in the file that nothing can interpret.
+
+The Raw journal lists them under **N damaged**, showing the bytes they hold, with a swipe to
+remove one — a deletion with only a journal half, since nothing was ever derived from a line
+nothing could read. A rule over *records* can never remove one, deliberately: the retention
+purge runs on every foreground and a damaged line has no readable `receivedAt` to age by, so a
+purge that swept them up would delete evidence it exists to preserve.
+
+The read is also decoded **per line**, where it used to be decoded as one UTF-8 string. That
+mattered more than it looks: a single invalid byte anywhere made the whole file unreadable, so
+one torn write could show an empty journal on every screen while the store still held rows
+derived from it a moment earlier.
+
+#### The append is `O_APPEND`, and it frames the file first
+
+Two properties the journal did not have.
+
+`FileHandle(forWritingTo:)` opens **without** `O_APPEND`, so an append was two steps — position
+the offset, then write — and two writers that interleave those steps lose one line outright. The
+survivor is perfectly valid, so nothing anywhere records that the other arrived. That cannot
+happen today, because the intent is pinned to the app's own process and one lock serializes its
+writers — but that pin is the one assumption this design rests on that nobody has published
+field data for, and `open(2)` with `O_APPEND` removes the need to be right about it. Measured
+rather than assumed: a two-process repro of the seek-then-write sequence lost half the lines.
+
+The second is framing. A record is written with its newline **last**, so an append killed
+part-way leaves a line with no terminator — and the next append would run straight onto the end
+of it, fusing two records into one undecodable line. That would take the *following* alert down
+with the damaged one, through no fault of its own, leaving nothing to say it ever arrived. So
+the append writes a newline first when the file does not already end in one: one byte in the
+rare case, and the difference between losing one alert and losing two.
 
 #### Removing a line is one atomic step
 
@@ -650,8 +737,14 @@ ST1 ok|spending-tracker|main:0|chars:231|rx:1|fid:1|grp:0
 
 **Last captured** now lives only on the Diagnostics screen. It used to be a banner on the
 first screen; it was removed because it was permanently on display for a value that changes
-rarely. The signal is not gone — it is under **⋯ → Diagnostics**, alongside last manual entry
-and the counts.
+rarely. The signal is not gone — it is under **⋯ → Diagnostics**, alongside last manual entry,
+the app's recent launches, and the counts.
+
+Two kinds of line are excluded from it, for the same reason: the figure answers *"is the
+automation still capturing"*, and neither a hand-typed entry nor an **empty invocation** is a
+capture. An empty one means the Shortcut ran and handed over nothing — a broken Message wiring,
+not a quiet day — and counting it would hold the number looking fresh while the ledger stopped
+growing. The count of them is on the screen beside it, where it says what happened.
 
 ---
 
@@ -660,7 +753,10 @@ and the counts.
 - **Signing expires every 7 days** on a free Apple ID. After that the app will not launch
   and capture stops *silently* — the Shortcut still fires, the intent just never runs.
   Re-sign from Xcode (⌘R) weekly. **Nothing on the main screen will tell you this happened**;
-  check **⋯ → Diagnostics** for "Last captured", which is now the only place it is visible.
+  check **⋯ → Diagnostics**, where the app's recent launches say whether the process has been
+  running at all — which is the sharper signal, since "Last captured" cannot tell a stopped
+  capture from a quiet week. Diagnostics also says so out loud once the app has not run for six
+  days, ahead of the seven-day wall.
 - **"Every transaction the moment it occurs" is not literally achievable.** SMS delivery
   is best-effort, and each purchase generates 2–3 alerts (authorized, posted, plus
   card-not-present/international variants). A statement import will eventually be the
@@ -692,7 +788,7 @@ xcodebuild -project spending-tracker.xcodeproj -scheme spending-tracker \
 
 ```
 spending-tracker/
-  Journal/          append-only JSONL journal + runtime diagnostics
+  Journal/          append-only JSONL journal, runtime diagnostics, launch log
   Intents/          LogTransactionIntent — the only App Intent
   ContentView.swift the charge feed, month total, and swipe-to-delete
 ```

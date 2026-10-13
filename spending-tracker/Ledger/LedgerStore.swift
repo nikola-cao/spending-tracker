@@ -151,7 +151,7 @@ final class LedgerStore {
         from records: [JournalRecord]
     ) -> (bank: Int?, edits: [JournalInstruction.Edit]) {
         let lines = records.compactMap { record -> (runID: UUID, body: String)? in
-            let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let body = record.trimmedBody
             return body.isEmpty ? nil : (record.runID, body)
         }
 
@@ -297,7 +297,7 @@ final class LedgerStore {
         var seenInvocations = Set<UUID>()
 
         for record in records {
-            let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let body = record.trimmedBody
             guard !body.isEmpty else { continue }
             guard seenInvocations.insert(record.runID).inserted else { continue }
 
@@ -372,7 +372,7 @@ final class LedgerStore {
         // A purge that cannot run is harmless — the same lines go on a later drain — so the
         // error is deliberately swallowed here, unlike in a deletion the user asked for.
         return (try? JournalStore.remove(from: journalURL) { record in
-            let body = record.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let body = record.trimmedBody
             guard !body.isEmpty else { return record.receivedAt <= cutoff }
             // A charge or a deposit is kept forever, whenever it arrived: the ledger row it
             // produced has to stay derivable from this line for the rest of the app's life.
@@ -609,6 +609,32 @@ final class LedgerStore {
         return try deleteInvocations(runIDs: [record.runID])
     }
 
+    /// Deletes a line the current schema cannot read back.
+    ///
+    /// The one deletion with **only** a journal half, because there is nothing else it could
+    /// have: a line nothing can decode produced no `AlertEvent` and no `Txn`, so no row is
+    /// removed and no figure moves. `rows` is therefore always zero and the caller should say so
+    /// rather than print a count.
+    ///
+    /// It exists because the alternative is worse than it sounds. Every rewrite carries an
+    /// undecodable line through untouched — deliberately, since it is the only copy of whatever
+    /// it holds — but that made it **permanently undeletable**: no screen could address it, and
+    /// no rule could match it, so it sat at the tail of the file for the life of the app while
+    /// the retention window that clears ordinary junk could not touch it either.
+    ///
+    /// Addressed by its bytes rather than by position, for the same reason everything else here
+    /// is addressed by identity: a rewrite renumbers every line in the file, so an index is a
+    /// name that changes under the thing it names. Two damaged lines with identical bytes are
+    /// identical evidence, so removing both is the honest reading of "remove this line".
+    @discardableResult
+    func deleteDamagedLine(_ bytes: Data) throws -> JournalDeletion {
+        var result = JournalDeletion()
+        result.lines = try JournalStore.removeDamaged(from: journalURL) { damaged in
+            damaged == bytes
+        }
+        return result
+    }
+
     /// Deletes an edit line and the row it named.
     ///
     /// **Store first, and only here.** Everywhere else the journal is written first, because a
@@ -731,6 +757,27 @@ final class LedgerStore {
         var parserVersion = 0
         var journalLines = 0
         var journalBytes = 0
+
+        /// Lines in the file that could not be read back at all. Non-zero is the one state in
+        /// which a transaction can be missing with no other trace on any screen — which is
+        /// exactly why the count is here rather than left to a `print` somewhere.
+        var damagedLines = 0
+        var damagedBytes = 0
+
+        /// Lines written by a process, or into a container, other than this one. Every line
+        /// records both, so this is a claim that can be checked rather than believed — and
+        /// should always be zero.
+        var foreignLines = 0
+
+        /// Bodies still inside the retention window that resolved to no movement of money —
+        /// a merchant's own receipt, an OTP, a statement notice.
+        var heldLines = 0
+
+        /// Invocations that arrived carrying nothing. Not the same as a failure to *read* a
+        /// body: this is the Shortcut handing over an empty string, which the intent journals
+        /// on purpose so that "ran with empty input" stays distinguishable from "never ran".
+        var emptyInvocations = 0
+
         var lastCapture: Date?
         var lastManualEntry: Date?
     }
@@ -744,10 +791,40 @@ final class LedgerStore {
         result.transactionCount = (try? context.fetchCount(FetchDescriptor<Txn>())) ?? 0
         result.parserVersion = AlertParsers.version
 
-        let records = JournalStore.readAll(from: journalURL)
+        // `read`, not `readAll`: the damaged lines are half of what this screen is for, and the
+        // records-only reader cannot report them.
+        let read = JournalStore.read(from: journalURL)
+        let records = read.records
         result.journalLines = records.count
-        // Manual entries are excluded: this answers "is the AUTOMATION still capturing".
-        result.lastCapture = records.last { $0.note != JournalRecord.manualMarker }?.receivedAt
+        result.damagedLines = read.damaged.count
+        result.damagedBytes = read.damagedByteCount
+
+        let here = JournalLocation.directoryPath
+        let process = RuntimeFacts.processName()
+        result.foreignLines = records.filter {
+            $0.journalDirectory != here || $0.processName != process
+        }.count
+
+        // Re-parsed here rather than remembered anywhere. `Txn` holds only movements of money,
+        // so a body that resolved to nothing is stored nowhere else — and what it means is a
+        // function of the parser, which changes.
+        for record in records {
+            switch record.outcome {
+            case .nothing: result.heldLines += 1
+            case .empty: result.emptyInvocations += 1
+            case .movement, .instruction: break
+            }
+        }
+
+        // Manual entries are excluded: this answers "is the AUTOMATION still capturing". So are
+        // empty invocations, and for the same reason — an empty body means the automation ran
+        // and handed over nothing, which is a broken Message wiring rather than a capture. Left
+        // in, a broken wiring would keep this figure looking fresh while nothing was being
+        // captured at all, and it is the only warning the 7-day signing expiry gives. The count
+        // of them is on the screen beside it, where it says what happened.
+        result.lastCapture = records.last {
+            $0.note != JournalRecord.manualMarker && !$0.trimmedBody.isEmpty
+        }?.receivedAt
         result.lastManualEntry = records.last { $0.note == JournalRecord.manualMarker }?.receivedAt
 
         result.journalBytes = (try? FileManager.default

@@ -233,4 +233,160 @@ struct JournalStoreTests {
         #expect(back.contains { $0.rawText == realBody },
                 "an alert that arrived during a rewrite must survive it")
     }
+
+    // MARK: - Lines that cannot be read back
+
+    /// Bytes with no trailing newline, which is exactly what a kill in the middle of an append
+    /// leaves: `append` frames the record with its newline LAST, so a partial write is always a
+    /// line without one.
+    private func leaveATornFragment(_ bytes: Data, at url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
+            _ = FileManager.default.createFile(atPath: url.path(percentEncoded: false), contents: nil)
+        }
+
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: bytes)
+    }
+
+    private func captured(_ body: String) -> JournalRecord {
+        .diagnostic(runID: UUID(), phase: JournalRecord.capturePhase, raw: body, note: "")
+    }
+
+    /// A line that does not decode is **reported**, not dropped.
+    ///
+    /// This is the whole reason `read(from:)` is a shape of its own rather than `readAll`.
+    /// Dropping the line made "a line arrived and cannot be read" indistinguishable from "no
+    /// line ever arrived" — on the Raw journal screen, in `diagnostics()`, and in the drain,
+    /// which all read through the same function. And the store is derived from this file, so
+    /// that difference is a transaction that exists or one that does not.
+    @Test func aTornTailIsReportedRatherThanDropped() throws {
+        let url = tempJournalURL()
+        try JournalStore.append(captured(realBody), to: url)
+
+        let fragment = Data(#"{"id":"deadbeef","pha"#.utf8)
+        try leaveATornFragment(fragment, at: url)
+
+        let read = JournalStore.read(from: url)
+        #expect(read.records.count == 1, "the good line before it is still readable")
+        #expect(read.damaged.count == 1)
+        #expect(read.damaged.first == fragment, "it comes back as the bytes it actually is")
+        #expect(read.damagedByteCount == fragment.count)
+        #expect(read.isEmpty == false)
+    }
+
+    /// A file holding nothing but a damaged line is not an empty journal.
+    ///
+    /// The sharpest version of the same point: `readAll` sees no records, so every caller that
+    /// asks only for records is looking at a journal that appears never to have been written to
+    /// — while the file plain as day holds bytes.
+    @Test func aFileOfNothingButADamagedLineIsNotEmpty() throws {
+        let url = tempJournalURL()
+        try leaveATornFragment(Data([0x7B, 0x22, 0xE2, 0x82]), at: url)
+
+        #expect(JournalStore.readAll(from: url).isEmpty)
+        #expect(JournalStore.read(from: url).isEmpty == false)
+        #expect(JournalStore.read(from: url).damaged.count == 1)
+    }
+
+    /// A bad byte in the middle of the file must not blank the whole journal.
+    ///
+    /// The read used to decode the file as ONE UTF-8 string, so a single invalid byte anywhere
+    /// returned nothing at all — every screen would show an empty journal while the feed still
+    /// showed rows derived from it a moment earlier. Per line, the damage stays on its line.
+    @Test func anInvalidByteInTheMiddleHidesNothing() throws {
+        let url = tempJournalURL()
+        try JournalStore.append(captured("before"), to: url)
+        // A terminated line torn off inside a multi-byte character: `{"` then half a euro sign.
+        try leaveATornFragment(Data([0x7B, 0x22, 0xE2, 0x82, 0x0A]), at: url)
+        try JournalStore.append(captured("after"), to: url)
+
+        let read = JournalStore.read(from: url)
+        #expect(read.records.map(\.rawText) == ["before", "after"])
+        #expect(read.damaged.count == 1)
+        #expect(JournalStore.readAll(from: url).map(\.rawText) == ["before", "after"])
+    }
+
+    /// An append after a torn tail frames the file first, so the next alert is not written onto
+    /// the end of the fragment.
+    ///
+    /// Without that guard the two records become one undecodable line, which means a kill during
+    /// one append takes the *following* alert with it — an alert that arrived intact, and that
+    /// nothing anywhere would record as having arrived at all. One damaged line is a loss; two,
+    /// the second of them through no fault of its own, is a bug.
+    @Test func anAppendAfterATornTailDoesNotFuseOntoIt() throws {
+        let url = tempJournalURL()
+        try JournalStore.append(captured("before"), to: url)
+        try leaveATornFragment(Data(#"{"id":"dead"#.utf8), at: url)
+        try JournalStore.append(captured("after"), to: url)
+
+        let read = JournalStore.read(from: url)
+        #expect(read.records.map(\.rawText) == ["before", "after"])
+        #expect(read.damaged.count == 1, "the fragment is still the fragment, on its own line")
+    }
+
+    /// A damaged line can be removed, addressed by the bytes it holds.
+    ///
+    /// Every rewrite carries an undecodable line through untouched — deliberately, since it is
+    /// the only copy of whatever it holds — which until now made it permanent: no screen could
+    /// name it and no rule could match it, so it sat at the tail of the file for the life of the
+    /// app, and the retention window that clears ordinary junk could not reach it either.
+    @Test func aDamagedLineCanBeRemovedByItsBytes() throws {
+        let url = tempJournalURL()
+        try JournalStore.append(captured(realBody), to: url)
+
+        let fragment = Data(#"{"id":"deadbeef","pha"#.utf8)
+        try leaveATornFragment(fragment, at: url)
+
+        let removed = try JournalStore.removeDamaged(from: url) { $0 == fragment }
+
+        #expect(removed == 1)
+        let read = JournalStore.read(from: url)
+        #expect(read.damaged.isEmpty)
+        #expect(read.records.map(\.rawText) == [realBody])
+    }
+
+    /// A rule that decides about records never removes a line it cannot read.
+    ///
+    /// Every record-shaped caller is deciding about rows the ledger derived from a line, and
+    /// nothing was ever derived from a line nothing could read. The retention purge is the one
+    /// that matters: it runs on every foreground, and a version of it that swept damaged lines
+    /// up would delete the evidence it exists to preserve.
+    @Test func aRecordRuleNeverRemovesADamagedLine() throws {
+        let url = tempJournalURL()
+        try JournalStore.append(captured("delete me"), to: url)
+
+        let fragment = Data(#"{"id":"deadbeef","pha"#.utf8)
+        try leaveATornFragment(fragment, at: url)
+
+        let removed = try JournalStore.remove(from: url) { _ in true }
+
+        #expect(removed == 1, "the record goes")
+        #expect(try Data(contentsOf: url).range(of: fragment) != nil,
+                "and the damaged bytes stay — no rule over records can speak for them")
+    }
+
+    /// The framing guard reads the file, so it has to cope with a file that is not there and one
+    /// that is empty — the first append on a fresh install does both — and it must not add
+    /// anything when the file is already framed.
+    ///
+    /// Asserted in newlines rather than in records, because that is where the bug would show:
+    /// a check that always answers "not terminated" writes a stray blank line before every
+    /// record, and every reader here ignores empty lines, so nothing else would ever notice.
+    /// (It did, in the first draft: the check read the tail through a write-only descriptor.)
+    @Test func appendingToANewJournalStillWorks() throws {
+        let url = tempJournalURL()
+        try JournalStore.append(captured("first"), to: url)
+        #expect(JournalStore.readAll(from: url).map(\.rawText) == ["first"])
+
+        try JournalStore.append(captured("second"), to: url)
+        #expect(JournalStore.readAll(from: url).map(\.rawText) == ["first", "second"])
+
+        let raw = try Data(contentsOf: url)
+        #expect(raw.filter { $0 == 0x0A }.count == 2, "one newline per record, and no others")
+        #expect(raw.last == 0x0A, "the file ends framed, so the next append has nothing to fix")
+    }
 }

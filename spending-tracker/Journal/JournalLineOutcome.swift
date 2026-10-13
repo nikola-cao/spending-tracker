@@ -39,7 +39,7 @@ extension JournalRecord {
     /// What this line is. Cheap enough to call for a confirmation dialog, and never cached:
     /// a cached answer could disagree with the parser that is actually running.
     nonisolated var outcome: JournalLineOutcome {
-        let body = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = trimmedBody
         guard !body.isEmpty else { return .empty }
 
         // Instructions first, and never through `AlertParsers`: that registry answers "what did
