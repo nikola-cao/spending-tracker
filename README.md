@@ -316,6 +316,58 @@ filtered rows: a Balance narrowed to dining sitting above an unfiltered Bank wou
 `Remaining` mean nothing. What one category cost is the subtotal in the list's own header, which
 is the figure that is honestly about the rows under it.
 
+### Classifying a merchant automatically
+
+Optional, and **off until a key is pasted in** (⋯ → AI categorization). With no key there is no
+client built, no request made, and no URL formed — filing by hand is a supported way to use this
+app, not a degraded one. The key goes in the keychain: never a file, never `UserDefaults`, and
+never the journal, which the Raw journal screen renders and Diagnostics can export.
+
+**The classifier is never in the capture path.** It is a pass that runs *after* the drain, over
+the merchants nothing has answered for. Capture is untouched by it, and the App Intent could not
+reach it if it tried. A pass that fails writes nothing at all, so the worst a bad network can do
+is leave rows saying they have no category yet — which is what they already said.
+
+**The backlog is a question, not a queue.** Every pass asks the store which charges have no
+answer, so nothing is stored between passes and nothing has to survive the rebuild that empties
+the store. A merchant leaves the backlog by having one more journal line.
+
+**A pass asks about a merchant, not a transaction** — so a subscription costs one request ever,
+and every spelling of the same shop is one question. That is `MerchantKey` doing its job.
+
+It runs when the app comes to the front, on pull-to-refresh, and when the network comes back
+while the app is open (`NWPathMonitor`, no entitlement and no `Info.plist` entry). It is **fire
+and forget**: nothing on screen waits for an answer, and the pull-to-refresh spinner is not bound
+to it.
+
+Requests go out batched — forty merchants each, at most eight requests per pass — with thinking
+**explicitly disabled**, since it is on by default and would bill reasoning tokens to decide what
+`CHICK-FIL-A` is. And `json_object` mode guarantees valid JSON **syntax** and nothing about the
+schema, so the five categories are enforced here, in `DeepSeekClient.labels(from:for:)`, rather
+than trusted: a label outside the vocabulary is a **declined answer**, never filed under
+Miscellaneous. Same rule as the parsers — a rejected value beats a fabricated one.
+
+#### What happens when it does not work
+
+Nothing about a failure is held against a merchant that was not tested.
+
+| What happened | What it means | What happens next |
+|---|---|---|
+| No network, a timeout, 429, 5xx, an empty or truncated reply | About the call | The merchant waits — 30s, then doubling to a day — and is asked again |
+| Every merchant in the reply unreadable | The prompt or the model is wrong | Those merchants wait; the pass says `declined` |
+| 401/402/403, or a malformed request | About the key | The run **stops**, no merchant's wait moves, and the settings screen says why |
+
+**Nothing is ever given up on.** The schedule tops out at one request a day per merchant, which is
+cheap enough that a merchant this service can never read simply costs a little forever. That is
+deliberate: a five-strike give-up would abandon exactly the merchants that were unlucky enough to
+fail during a bad week, and the user has no way to notice. The retry state is a throttle in
+`UserDefaults` — losing it costs a few wasted requests and never a category — and "Try again now"
+forgets every wait, for when the network has just come back.
+
+One pass is bounded on purpose (at most 320 merchants), because a first run over a long history
+would otherwise hold the radio open and be killed mid-flight. The rest are picked up over the next
+few times the app is opened, and the settings screen says so rather than leaving it implicit.
+
 ### The Charge tab
 
 A charge is: merchant, amount, purchase date, and the card's last digits.
@@ -733,12 +785,15 @@ would have been nothing left to notice it by.
 - **Statement import and reconciliation.** The plan's ledger of record, but it needs a real
   statement export first. Building an importer against a guessed CSV format is the same
   mistake the parser nearly made before real messages arrived.
-- **Classifying a merchant automatically.** The design is settled — a lazy pass over merchants
-  with no category, calling DeepSeek, batched and retried at the next foreground — but the
-  pass itself is not built. Everything it needs is: the lines, the precedence and the fold are
-  in place and tested, so the classifier is a producer of `MerchantCategory` lines and nothing
-  else. The feature is fully usable without it, which is the point of building it this way
-  round.
+- **A category on a hand-entered charge, as it is entered.** The picker is offered when editing,
+  because a `Category` line has to name a row and a row does not exist until the drain has run.
+  The add form could drain first and then file the new row by its runID, which is a small amount
+  of machinery for a flow that may never be worth it.
+- **Saying which categories the model chose rather than the user.** `Txn.categorySourceRaw`
+  records it and nothing displays it yet; the chip looks the same either way.
+- **A background pass.** The classifier runs only while the app is open, because the app has no
+  background modes at all. A `BGTaskScheduler` trigger would need an entitlement and would be
+  best-effort, and it would point at the same `CategoryEngine.run()` — nothing else would change.
 
 ## The parser
 
@@ -949,11 +1004,19 @@ xcodebuild -project spending-tracker.xcodeproj -scheme spending-tracker \
   -derivedDataPath ./DerivedData -only-testing:spending-trackerUITests test
 ```
 
+`CategoryEngine` refuses to run when XCTest is loaded, and the unit tests override that refusal
+explicitly rather than the other way round. The tests run **inside the app binary**, so a pass
+that could reach the network would put a live request on the wire on every run of the suite — and
+the seam that prevents it is a property of the default, not of remembering.
+
 ### Layout
 
 ```
 spending-tracker/
   Journal/          append-only JSONL journal, runtime diagnostics, launch log
+  Ledger/           the derived store: AlertEvent, Txn, and the drain
+  Parsing/          one parser per source, plus Money and the manual-entry format
+  Categorization/   the category vocabulary, the merchant key, and the classifier
   Intents/          LogTransactionIntent — the only App Intent
   ContentView.swift the charge feed, the summary figures, and swipe-to-delete
 ```

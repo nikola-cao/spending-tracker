@@ -473,31 +473,35 @@ final class spending_trackerUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Charges recorded"].waitForExistence(timeout: 5))
     }
 
-    /// Filing a charge by hand, and then filtering the feed down to it.
+    /// The category picker, and the filter over the feed.
     ///
     /// One test rather than two, because they are one feature seen twice: what the picker
     /// writes is what the filter selects on, and two tests could both pass while the two
     /// disagreed about what a category is called.
+    ///
+    /// **Hermetic, deliberately.** The row is named per run and every assertion is scoped to its
+    /// cell. A test that matches on a merchant name shared with earlier runs, or on any text
+    /// anywhere on the screen, passes or fails on what a previous run left in the journal — and
+    /// this one already did exactly that before it was scoped.
     @MainActor
     func testAChargeCanBeCategorizedAndThenFilteredFor() throws {
         let app = XCUIApplication()
         app.launch()
 
+        let merchant = "UITEST CAT \(UUID().uuidString.prefix(6))"
+
         app.buttons["Add manually"].tap()
-        replaceText(in: app.textFields["Merchant"], with: "UITEST CATEGORIZE")
+        replaceText(in: app.textFields["Merchant"], with: merchant)
         replaceText(in: app.textFields["Amount"], with: "12.00")
         app.buttons["Save"].tap()
         app.buttons["Cancel"].tap()
 
-        let row = app.staticTexts["UITEST CATEGORIZE"]
+        let row = app.staticTexts[merchant]
         XCTAssertTrue(row.waitForExistence(timeout: 5))
 
-        let subtitle = { (word: String) in
-            app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", word)).firstMatch
-        }
         // A charge with no category says so. Silence would be indistinguishable from a row the
         // app had simply failed to draw.
-        XCTAssertTrue(subtitle("Uncategorized").exists,
+        XCTAssertTrue(cell(for: merchant, in: app, mentions: "Uncategorized").exists,
                       "a new charge should say it is not categorized yet")
 
         row.tap()
@@ -513,9 +517,10 @@ final class spending_trackerUITests: XCTestCase {
         app.buttons["Save"].tap()
         app.buttons["Cancel"].tap()
 
-        XCTAssertTrue(subtitle("Grocery").waitForExistence(timeout: 5),
+        XCTAssertTrue(cell(for: merchant, in: app, mentions: "Grocery")
+            .waitForExistence(timeout: 5),
                       "the row should show the category it was filed under")
-        XCTAssertFalse(subtitle("Uncategorized").exists,
+        XCTAssertFalse(cell(for: merchant, in: app, mentions: "Uncategorized").exists,
                        "and should no longer claim to be uncategorized")
 
         // A category it is not in must hide it — this is the whole point of the filter.
@@ -523,7 +528,7 @@ final class spending_trackerUITests: XCTestCase {
         let dining = app.buttons["Dining"]
         XCTAssertTrue(dining.waitForExistence(timeout: 5))
         dining.tap()
-        XCTAssertFalse(app.staticTexts["UITEST CATEGORIZE"].waitForExistence(timeout: 2),
+        XCTAssertFalse(app.staticTexts[merchant].waitForExistence(timeout: 2),
                        "a Dining filter must not show a Grocery row")
 
         // ...and the category it is in must bring it back.
@@ -531,7 +536,64 @@ final class spending_trackerUITests: XCTestCase {
         let groceryAgain = app.buttons["Grocery"]
         XCTAssertTrue(groceryAgain.waitForExistence(timeout: 5))
         groceryAgain.tap()
-        XCTAssertTrue(app.staticTexts["UITEST CATEGORIZE"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts[merchant].waitForExistence(timeout: 5),
                       "the row belongs in the Grocery filter")
+    }
+
+    /// The cell holding `merchant`'s row — the scope every category assertion is made in.
+    @MainActor
+    private func cell(for merchant: String, in app: XCUIApplication) -> XCUIElement {
+        app.cells.containing(.staticText, identifier: merchant).firstMatch
+    }
+
+    /// Whether that cell's own subtitle mentions `word`.
+    ///
+    /// Read from the cell rather than from every static text on the screen. "Uncategorized"
+    /// appears in the subtitle of every unfiled charge, so a screen-wide search answers a
+    /// question about the whole ledger when the question was about one row.
+    @MainActor
+    private func cell(
+        for merchant: String, in app: XCUIApplication, mentions word: String
+    ) -> XCUIElement {
+        self.cell(for: merchant, in: app)
+            .staticTexts.matching(NSPredicate(format: "label CONTAINS %@", word))
+            .firstMatch
+    }
+
+    /// The classifier's screen, opened the way a user reaches it.
+    ///
+    /// Deliberately says nothing about whether a key is set: a simulator someone has pasted one
+    /// into would fail that assertion, and the state this test is really guarding is the one
+    /// where there is **no** key — which is the state the app has to behave sensibly in, and the
+    /// state every other test in this file runs in.
+    @MainActor
+    func testCategorizationScreenOpensWithNoKeyConfigured() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let more = app.buttons["More"]
+        XCTAssertTrue(more.waitForExistence(timeout: 10))
+        more.tap()
+
+        let entry = app.buttons["AI categorization"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        entry.tap()
+
+        XCTAssertTrue(app.navigationBars["AI categorization"].waitForExistence(timeout: 5))
+
+        // What leaves the phone, said plainly rather than buried — the one part of this feature
+        // that cannot be taken back once it has happened. Near the top, so it is drawn.
+        XCTAssertTrue(app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Merchant names are sent to DeepSeek")
+        ).firstMatch.exists)
+
+        // The actions are below the fold, and a `Form` only materialises what it has drawn — so
+        // they are genuinely absent from the accessibility tree until it scrolls.
+        app.swipeUp()
+
+        let categorize = app.buttons["Categorize now"]
+        XCTAssertTrue(categorize.waitForExistence(timeout: 5))
+        XCTAssertFalse(categorize.isEnabled,
+                       "a pass must not be offered with nothing to make it with")
     }
 }

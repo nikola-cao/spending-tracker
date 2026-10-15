@@ -224,7 +224,51 @@ final class LedgerStore {
             }
         }
 
-        /// What one row ends up filed under, or nil for nothing.
+        /// What the journal decides about one row.
+        enum Decision: Equatable {
+            /// A line named this row. A nil label is an **explicit clear** — an answer about the
+            /// absence of a category, which is why it is not the same case as `unanswered`.
+            case named(label: String?, source: JournalInstruction.Source)
+
+            /// A rule stands for this row's merchant.
+            case rule(label: String, source: JournalInstruction.Source)
+
+            /// Nothing in the journal speaks for this row.
+            case unanswered
+
+            /// The category to show, or nil when there is none.
+            var label: String? {
+                // Written as separate arms rather than one combined pattern: `named` carries a
+                // `String?` and `rule` a `String`, and a shared binding would have to pick one
+                // of them to be.
+                switch self {
+                case .named(let label, _): return label
+                case .rule(let label, _): return label
+                case .unanswered: return nil
+                }
+            }
+
+            /// Who decided it, or nil when there is no category to have a source.
+            ///
+            /// A clear reports no source: there is no category, and claiming one had a decider
+            /// would be a claim about a value that is not there.
+            var source: JournalInstruction.Source? {
+                switch self {
+                case .named(_, let source), .rule(_, let source): return source
+                case .unanswered: return nil
+                }
+            }
+
+            /// Whether the journal has answered for this row at all, category or not.
+            ///
+            /// The question the classifier's backlog is asked. A row the user cleared by hand
+            /// **has** been answered — it is not waiting on the model — and treating it as
+            /// outstanding would spend a request per pass to be told what the row already says,
+            /// and would keep telling the user their decision was pending.
+            var isAnswered: Bool { self != .unanswered }
+        }
+
+        /// What one row is filed under, or why it is not.
         ///
         /// **First match wins, and the order is the whole design.**
         ///
@@ -240,19 +284,16 @@ final class LedgerStore {
         /// decision already made by hand — which matters because the model's answers arrive
         /// asynchronously and *after* the fact, and a category the user set that quietly changed
         /// under them would be the worst failure this feature could have.
-        func resolve(
-            occurrenceKey: String?,
-            merchant: String
-        ) -> (label: String, source: JournalInstruction.Source)? {
+        func decide(occurrenceKey: String?, merchant: String) -> Decision {
             if let occurrenceKey, let assignment = overrides[occurrenceKey] {
-                return assignment.label.map { ($0, assignment.source) }
+                return .named(label: assignment.label, source: assignment.source)
             }
 
             let key = MerchantKey.normalize(merchant)
-            guard !key.isEmpty else { return nil }
-            if let label = userRules[key] { return (label, .user) }
-            if let label = aiRules[key] { return (label, .ai) }
-            return nil
+            guard !key.isEmpty else { return .unanswered }
+            if let label = userRules[key] { return .rule(label: label, source: .user) }
+            if let label = aiRules[key] { return .rule(label: label, source: .ai) }
+            return .unanswered
         }
     }
 
@@ -392,14 +433,104 @@ final class LedgerStore {
         let txns = (try? context.fetch(FetchDescriptor<Txn>())) ?? []
 
         for txn in txns where txn.isCategorizable {
-            let resolved = decisions.resolve(occurrenceKey: txn.occurrenceKey, merchant: txn.merchant)
-            let label = resolved?.label ?? ""
-            let source = resolved?.source.rawValue ?? ""
+            let decision = decisions.decide(
+                occurrenceKey: txn.occurrenceKey, merchant: txn.merchant)
+            let label = decision.label ?? ""
+            let source = decision.source?.rawValue ?? ""
 
             guard txn.categoryRaw != label || txn.categorySourceRaw != source else { continue }
             txn.categoryRaw = label
             txn.categorySourceRaw = source
         }
+    }
+
+    // MARK: - What is waiting to be classified
+
+    /// The merchants waiting for an answer, newest first, one entry per merchant.
+    ///
+    /// **Derived, never stored.** The backlog is the set of charges the journal has not answered
+    /// for, recomputed from scratch whenever it is asked. A stored queue could not survive the
+    /// schema change that empties the store, and the only place that outlives one is the journal
+    /// — which is where a category already lives. So the queue is a question, and a merchant
+    /// leaves it by having one more line, or by the row being deleted.
+    ///
+    /// Deduped by `MerchantKey`, because a merchant is the unit the model is asked about: one
+    /// entry per transaction would spend a request per coffee, and every one of them would be
+    /// the same question. The spelling carried is the one on the newest row, which is the one
+    /// the user is most likely looking at.
+    ///
+    /// A row the user cleared by hand is **not** waiting. See `CategoryDecisions.Decision`.
+    func uncategorizedMerchants(limit: Int) -> [CategoryRequest] {
+        let decisions = Self.instructions(
+            from: JournalStore.readAll(from: journalURL)).categories
+
+        let descriptor = FetchDescriptor<Txn>(
+            sortBy: [SortDescriptor(\Txn.receivedAt, order: .reverse)])
+        let txns = (try? container.mainContext.fetch(descriptor)) ?? []
+
+        var seen = Set<String>()
+        var waiting: [CategoryRequest] = []
+        for txn in txns where txn.isCategorizable {
+            guard !decisions.decide(
+                occurrenceKey: txn.occurrenceKey, merchant: txn.merchant).isAnswered
+            else { continue }
+
+            let key = MerchantKey.normalize(txn.merchant)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+
+            waiting.append(CategoryRequest(key: key, merchant: txn.merchant))
+            if waiting.count >= limit { break }
+        }
+        return waiting
+    }
+
+    /// The figures the Diagnostics screen shows for the classifier.
+    ///
+    /// Counted here rather than stored anywhere, for the same reason everything else on that
+    /// screen is: they are all restatements of the journal, and a remembered count is a count
+    /// that can be wrong.
+    struct CategorizationCounts: Equatable {
+        var charges = 0
+        var categorized = 0
+        var byPerson = 0
+        var byModel = 0
+        /// Charges with nothing decided for them yet.
+        var waiting = 0
+        /// Distinct merchants among those, which is what a pass would actually ask about.
+        var merchantsWaiting = 0
+        var userRules = 0
+        var modelRules = 0
+    }
+
+    func categorizationCounts() -> CategorizationCounts {
+        var result = CategorizationCounts()
+        let decisions = Self.instructions(
+            from: JournalStore.readAll(from: journalURL)).categories
+        result.userRules = decisions.userRules.count
+        result.modelRules = decisions.aiRules.count
+
+        let txns = (try? container.mainContext.fetch(FetchDescriptor<Txn>())) ?? []
+        var waitingKeys = Set<String>()
+
+        for txn in txns where txn.isCategorizable {
+            result.charges += 1
+
+            if txn.hasCategory {
+                result.categorized += 1
+                if txn.categoryWasSetByPerson { result.byPerson += 1 } else { result.byModel += 1 }
+            }
+
+            guard !decisions.decide(
+                occurrenceKey: txn.occurrenceKey, merchant: txn.merchant).isAnswered
+            else { continue }
+
+            result.waiting += 1
+            let key = MerchantKey.normalize(txn.merchant)
+            if !key.isEmpty { waitingKeys.insert(key) }
+        }
+
+        result.merchantsWaiting = waitingKeys.count
+        return result
     }
 
     /// The row an occurrence key names, or nil when nothing is stored under it.

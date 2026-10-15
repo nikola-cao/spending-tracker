@@ -13,6 +13,13 @@ struct ContentView: View {
 
     let ledger: LedgerStore
 
+    /// The classification pass. Inert without a key in the keychain, which is why nothing here
+    /// has to ask whether it is configured — see `CategoryEngine.clientFromKeychain`.
+    ///
+    /// Owned by the app rather than by this view: the view is rebuilt on every render, and a
+    /// pass that was under way would go with it.
+    let categorizer: CategoryEngine
+
     @Environment(\.scenePhase) private var scenePhase
 
     /// No predicate. `Txn` holds only parsed charges by construction — an alert that did not
@@ -128,6 +135,7 @@ struct ContentView: View {
     @State private var isShowingJournal = false
     @State private var isShowingManualEntry = false
     @State private var isShowingDiagnostics = false
+    @State private var isShowingCategorizationSettings = false
     @State private var isShowingBankBalance = false
     @State private var saveError: String?
 
@@ -223,6 +231,11 @@ struct ContentView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button {
+                            isShowingCategorizationSettings = true
+                        } label: {
+                            Label("AI categorization", systemImage: "sparkles")
+                        }
+                        Button {
                             isShowingDiagnostics = true
                         } label: {
                             Label("Diagnostics", systemImage: "stethoscope")
@@ -239,6 +252,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $isShowingManualEntry) {
                 ManualEntryView(ledger: ledger) { refresh() }
+            }
+            .sheet(isPresented: $isShowingCategorizationSettings) {
+                CategorizationSettingsView(ledger: ledger, categorizer: categorizer)
             }
             .sheet(isPresented: $isShowingDiagnostics) {
                 DiagnosticsView(ledger: ledger)
@@ -257,10 +273,26 @@ struct ContentView: View {
             // idempotent, so it is safe to run on every activation, and it doubles as the
             // self-healing path: anything the intent wrote while the app was closed is picked
             // up here.
+            //
+            // The classification pass rides along, after the drain rather than inside it — see
+            // `CategoryEngine` for why it is not part of the drain itself. It is fire and forget:
+            // nothing on this screen waits for an answer, because the rows it will file are
+            // already drawn and simply say they have no category yet.
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { refresh() }
+                if phase == .active {
+                    refresh()
+                    classify()
+                }
             }
-            .refreshable { refresh() }
+            .refreshable {
+                refresh()
+                classify()
+            }
+            // Started and torn down with the view. An `NWPathMonitor` left running would hold a
+            // callback alive for a screen that is gone, and its updates would drive passes from
+            // a view nobody is looking at.
+            .onAppear { categorizer.startWatchingConnectivity() }
+            .onDisappear { categorizer.stopWatchingConnectivity() }
         }
     }
 
@@ -268,6 +300,16 @@ struct ContentView: View {
         saveError = ledger.drain().saveError
         bankBalanceMinor = ledger.bankBalanceMinor
         cardBalanceMinor = ledger.cardBalanceMinor
+    }
+
+    /// Starts a classification pass without waiting for it.
+    ///
+    /// Deliberately not awaited, and deliberately not bound to the pull-to-refresh spinner. A
+    /// pass can take as long as the network takes, and nothing here is waiting on an answer — the
+    /// rows it will file already exist and already render. Making the gesture spin until a third
+    /// party replies would turn opening the app into waiting for one.
+    private func classify() {
+        Task { await categorizer.run() }
     }
 
     /// A refused write is the one failure that would otherwise render a complete-looking
@@ -1001,8 +1043,10 @@ private struct DamagedRow: View {
 }
 
 #Preview {
-    ContentView(ledger: LedgerStore(container: try! ModelContainer(
+    let ledger = LedgerStore(container: try! ModelContainer(
         for: Schema([AlertEvent.self, Txn.self]),
         configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
-    )))
+    ))
+    // Inert in the preview: no key is reachable from here, so no pass is ever made.
+    return ContentView(ledger: ledger, categorizer: CategoryEngine(ledger: ledger))
 }

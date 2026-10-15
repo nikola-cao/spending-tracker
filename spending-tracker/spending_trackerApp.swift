@@ -11,6 +11,7 @@ struct spending_trackerApp: App {
 
     private let container: ModelContainer
     private let ledger: LedgerStore
+    private let categorizer: CategoryEngine
 
     init() {
         // First thing, and before the store is built: this is a record that the app's process
@@ -23,13 +24,17 @@ struct spending_trackerApp: App {
         LaunchLog.record()
 
         let container = Self.makeContainer()
+        let ledger = LedgerStore(container: container)
         self.container = container
-        self.ledger = LedgerStore(container: container)
+        self.ledger = ledger
+        // Built here rather than inside the view, so it is one object for the life of the app
+        // and so a running pass is not thrown away by a re-render. It is inert without a key.
+        self.categorizer = CategoryEngine(ledger: ledger)
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView(ledger: ledger)
+            ContentView(ledger: ledger, categorizer: categorizer)
         }
         .modelContainer(container)
     }
