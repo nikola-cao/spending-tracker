@@ -80,3 +80,17 @@ fastlane/test_output
 # Injection / hot reload tooling
 # ---------------------------------------------------------------------------
 iOSInjectionProject/
+
+# ---------------------------------------------------------------------------
+# Claude Code — linked git worktrees
+#
+# A session isolated in a worktree puts it under .claude/worktrees/, INSIDE this
+# checkout. Git does not ignore linked worktrees on its own, so without this the
+# whole second copy of the project shows up as untracked — and `git add -A`
+# turns it into an embedded-repository entry pointing at that copy, which is a
+# confusing thing to find committed.
+#
+# Scoped to worktrees/ rather than .claude/ wholesale: project-shared settings
+# and agent definitions live alongside it and are meant to be committable.
+# ---------------------------------------------------------------------------
+.claude/worktrees/
