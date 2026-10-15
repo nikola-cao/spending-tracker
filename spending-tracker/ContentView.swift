@@ -238,7 +238,8 @@ struct ContentView: View {
     /// What the month cost — everything that left, by whatever route it took.
     ///
     /// The month is `occurredAt`'s, the best-known time of the purchase: the date printed in
-    /// the Amex email, and the alert's arrival for Fidelity, whose SMS carries no date at all.
+    /// the Amex email and the Fidelity payment text, and the alert's arrival for the Fidelity
+    /// charge text, which carries no date at all.
     /// Deliberately NOT `receivedAt`, which is when we heard about it — a charge that arrives
     /// late still belongs to the month it was made in.
     ///
@@ -500,12 +501,12 @@ private struct TxnRow: View {
 
     private var subtitle: String {
         // Labelled by WHERE the time came from, because the two are different claims and a
-        // bare timestamp reads as the transaction time either way. Amex prints a real date;
-        // the Fidelity SMS carries none, so there it can only be arrival — and arrival is a
-        // weaker signal for email, which Apple Mail fetches on a schedule rather than by push.
-        // A date-only source shows a date only. Printing "at 12:00 AM" would invent a time the
-        // message never stated, which is exactly the kind of plausible-looking wrong detail
-        // this project keeps refusing to make up.
+        // bare timestamp reads as the transaction time either way. Amex and a Fidelity payment
+        // text print a real date; the Fidelity charge text carries none, so there it can only
+        // be arrival — and arrival is a weaker signal for email, which Apple Mail fetches on a
+        // schedule rather than by push. A date-only source shows a date only. Printing "at
+        // 12:00 AM" would invent a time the message never stated, which is exactly the kind of
+        // plausible-looking wrong detail this project keeps refusing to make up.
         let when: String
         let label: String
         if txn.occurredAtIsFromMessage {

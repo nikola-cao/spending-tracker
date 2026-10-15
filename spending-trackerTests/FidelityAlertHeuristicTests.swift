@@ -26,6 +26,11 @@ struct FidelityAlertHeuristicTests {
         "Fidelity Credit Card: Your card ending in 7224 was charged $4.00 at CHICK-FIL-A.",
         // Truncated before the brand name, so only the card phrase identifies it.
         "Your card ending in 7224 was charged $17.50 at WHOLE FOODS MKT #12",
+        // The payment text. The heuristic's second clause does not fire on it — an SMS about a
+        // payment says `account ending in`, not `card ending in` — so this pins that the mark is
+        // journalled on the brand name alone. Recall is the whole job here; the payment parser
+        // is what decides it is a payment.
+        "Fidelity\u{00AE} Credit Card: A payment of $316.29 has been posted to your account ending in 7224 on 10/13/2026. Msg&Data rates may apply. Reply STOP to cancel.",
     ])
     func cardTrafficIsRecognised(_ body: String) {
         #expect(FidelityAlertHeuristic.mentionsFidelity(body))

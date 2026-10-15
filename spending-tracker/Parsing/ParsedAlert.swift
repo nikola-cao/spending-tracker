@@ -63,10 +63,11 @@ nonisolated struct ParsedAlert: Sendable, Equatable {
 
     /// The transaction time **when the message itself carries one**, otherwise nil.
     ///
-    /// The Fidelity SMS carries no timestamp at all, so nil there and the ledger falls back to
-    /// arrival time. The Amex email carries a real date, which matters because Apple Mail
-    /// fetches Gmail on a schedule rather than by push — an alert can arrive well after the
-    /// purchase, so arrival time is the weaker signal when a better one is available.
+    /// The Fidelity *charge* text carries no timestamp at all, so nil there and the ledger falls
+    /// back to arrival time. The Amex email carries a real date, and so does the Fidelity payment
+    /// text. That matters because Apple Mail fetches Gmail on a schedule rather than by push — an
+    /// alert can arrive well after the purchase — so arrival time is the weaker signal whenever
+    /// a better one is available.
     let occurredAt: Date?
 
     /// Stamped on every result so rows parsed by an older pattern table are identifiable, and

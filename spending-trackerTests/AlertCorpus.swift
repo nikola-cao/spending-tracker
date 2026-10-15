@@ -275,5 +275,15 @@ enum AlertCorpus {
         fixture("OTP", "Your verification code is 90210", []),
         fixture("Fidelity but not a card alert", "Fidelity Investments: your statement is ready", []),
         fixture("card phrase but no charge", "Your card ending in 7224 was used for a test.", []),
+
+        // The payment SMS. It arrives from the same sender under the same preamble as every
+        // fixture above and carries a figure of its own, so the sentence is the only thing
+        // separating the two — and a body both parsers read would be one movement of money
+        // recorded twice. The payment parser's own tests assert the other direction.
+        fixture("the payment SMS is not a charge",
+                "Fidelity\u{00AE} Credit Card: A payment of $316.29 has been posted to your "
+                    + "account ending in 7224 on 10/13/2026. "
+                    + "Msg&Data rates may apply. Reply STOP to cancel.",
+                []),
     ]
 }

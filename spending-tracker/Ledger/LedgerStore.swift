@@ -489,7 +489,7 @@ final class LedgerStore {
     ///
     /// `date` and `cardSuffix` are optional: only a merchant and an amount are required. A nil
     /// date leaves the entry with no time of its own, so the ledger falls back to the moment it
-    /// was made — exactly what it does for a Fidelity alert, which carries no date.
+    /// was made — exactly what it does for a Fidelity charge alert, which carries no date.
     @discardableResult
     func appendManual(
         kind: ParsedAlert.Kind,

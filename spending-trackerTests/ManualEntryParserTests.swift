@@ -118,7 +118,7 @@ struct ManualEntryParserTests {
                 chargeLine(merchant: "PUBLIX", amount: "14.20", date: nil, cardSuffix: "7224")))
 
         // No date of its own, so the ledger falls back to the moment the entry was made — the
-        // same fallback a Fidelity alert gets, since that carries no date either.
+        // same fallback a Fidelity charge alert gets, since that carries no date either.
         #expect(alert.occurredAt == nil)
         #expect(alert.amountMinor == 1420)
         #expect(alert.merchant == "PUBLIX")

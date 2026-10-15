@@ -1351,6 +1351,55 @@ struct LedgerStoreTests {
         #expect(ledger.bankBalanceMinor == 200_000)
     }
 
+    /// The whole path for a Fidelity payment, through the registry and the drain — and the one
+    /// kind that moves both figures at once.
+    ///
+    /// The Amex email walked this path first; this is a second source of the same kind, and the
+    /// test is here to pin that nothing downstream had to learn where a payment came from for it
+    /// to work: both folds ask the kind, never the source.
+    @Test func aFidelityPaymentBecomesAPaymentThatMovesBothFigures() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.setBankBalance(200_000)
+
+        // A charge first, so the card balance has something for the payment to come off.
+        try appendAlert(charge("500.00", "BREEZE*00HS5MV"), to: url)
+        try appendAlert(FidelityPaymentParserTests.realPayment, to: url)
+        ledger.drain()
+
+        #expect(ledger.bankBalanceMinor == 200_000 - 31_629, "$316.29 left the bank")
+        #expect(ledger.cardBalanceMinor == 50_000 - 31_629, "and the same amount came off the card")
+
+        let rows = txns(container)
+        #expect(rows.count == 2)
+        let payment = try #require(rows.first { $0.isPayment })
+        #expect(payment.merchant == "Fidelity payment")
+        #expect(payment.cardSuffix == "7224", "the card it settled, as the SMS printed it")
+        #expect(payment.amountMinor == -31_629)
+        #expect(!payment.isMoneyIn, "a payment is money going out, so never green")
+
+        // And the month is untouched by it, which is the whole difference between the two
+        // figures: a payment settles spending that belongs to an earlier month.
+        #expect(Txn.spendingTotal(rows) == 50_000)
+
+        // Its line is kept as well, because a payment is a ledger entry and the row has to stay
+        // derivable from the text. Three lines, not two: `setBankBalance` journals the balance
+        // it was given alongside the two alerts.
+        #expect(JournalStore.readAll(from: url).count == 3)
+    }
+
+    /// A payment line is kept however old it is, like a charge. Only a body that resolved to no
+    /// movement is dropped after the week, and a payment resolves to one.
+    @Test func aPaymentLineIsKeptHoweverOld() throws {
+        let (ledger, _, url) = try makeStore()
+        let longAgo = Date().addingTimeInterval(-365 * 24 * 60 * 60)
+        try appendAlert(FidelityPaymentParserTests.realPayment, at: longAgo, to: url)
+
+        let result = ledger.drain()
+
+        #expect(result.journalLinesDropped == 0)
+        #expect(JournalStore.readAll(from: url).count == 1)
+    }
+
     // MARK: - Venmo
 
     /// A Venmo payment becomes an ordinary deposit: a row in the feed, and a move to the bank
@@ -1442,9 +1491,9 @@ struct LedgerStoreTests {
 
     /// The rule the user asked for: a charge that had a time loses it when the date is edited.
     ///
-    /// A Fidelity alert carries no date, so its row's `occurredAt` is its arrival — a real time
-    /// of day, shown as "Alerted". Editing the date replaces that whole value with a date and
-    /// no time, so the row stops claiming a time of day nobody ever stated.
+    /// A Fidelity charge alert carries no date, so its row's `occurredAt` is its arrival — a
+    /// real time of day, shown as "Alerted". Editing the date replaces that whole value with a
+    /// date and no time, so the row stops claiming a time of day nobody ever stated.
     @Test func editingTheDateRemovesTheTimeTheAlertCarried() throws {
         let (ledger, container, url) = try makeStore()
         try appendAlert(charge("2.50", "BREEZE"), to: url)

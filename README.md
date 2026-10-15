@@ -1,7 +1,7 @@
 # spending-tracker
 
 An iOS app that shows credit-card spending as it happens, fed by the transaction-alert
-texts Fidelity sends for every card purchase.
+texts Fidelity sends for every card purchase and card payment.
 
 **Current stage: 1 — prove the pipe.** The app records the exact string the Shortcut
 hands it, plus facts about where that code ran, and shows them on one screen. It parses
@@ -29,6 +29,10 @@ nothing and stores no transactions yet.
 > actions and statement import are not. See below.
 >
 > **A second source added (2026-09-23).** Amex charges now arrive by email. See below.
+>
+> **A Fidelity payment text (2026-10-15).** A payment is now recognised from Fidelity's own
+> SMS as well as from Amex's email and by hand, so both cards report their payments. See
+> *Payments*.
 >
 > Note the journal rows so far are synthetic: a real Fidelity alert has not yet flowed
 > end-to-end, though every stage of the path is now individually proven.
@@ -91,8 +95,9 @@ regardless of which came in first. `Txn.receivedAt` is therefore its own field a
 `occurredAt` it would call any two same-day Amex charges at one merchant duplicates.
 
 **The month total is keyed on `occurredAt`, not `receivedAt`** — the best-known time of the
-purchase, which is the date printed in the Amex email and the alert's arrival for Fidelity.
-A charge that arrives late still belongs to the month it was made in.
+purchase, which is the date printed in the Amex email and the Fidelity payment text, and the
+alert's arrival for the Fidelity charge text. A charge that arrives late still belongs to the
+month it was made in.
 
 **Deleting a charge removes its journal line too.** This is not a nicety: the store is
 derived, so deleting only the row would have the next drain recreate it from the journal
@@ -251,10 +256,10 @@ drain rather than tracked as done, so there is no "already applied" flag to fall
 with the store after a rebuild, a deletion, or a crash between the two.
 
 **A date is set whole or cleared whole.** If the date changes, the row's time goes with it: a
-Fidelity row's `occurredAt` is its *arrival*, a real time of day, and keeping that while
-replacing the day would claim a time nobody ever stated. It becomes noon — the date-with-no-time
-convention — and the row reads "Purchased \<date\>". Clearing the date puts it back to arrival,
-exactly as omitting one does when adding.
+Fidelity *charge* row's `occurredAt` is its *arrival*, a real time of day, and keeping that
+while replacing the day would claim a time nobody ever stated. It becomes noon — the
+date-with-no-time convention — and the row reads "Purchased \<date\>". Clearing the date puts
+it back to arrival, exactly as omitting one does when adding.
 
 An edit cannot change what a row *is*. There is no tab switch when editing: moving a charge to a
 deposit would change whether it touches the bank, and "I mistyped the amount" is not a reason to
@@ -443,8 +448,8 @@ currency parser, which is what makes a permissive fragment test safe.
 
 ## Payments
 
-> **A fourth kind (2026-10-03).** Paying a card off, from Amex's payment confirmation or by
-> hand.
+> **A fourth kind (2026-10-03).** Paying a card off, from Amex's payment confirmation, from
+> Fidelity's payment text, or by hand.
 
 A payment is its own kind, not a large deposit, because it is the one movement that touches
 **both** balances: **Balance**, because it settles a debt that was owed, and **Bank**, because
@@ -497,8 +502,58 @@ transaction. The registry runs the large-purchase parser first, so an alert can 
 as a payment, and there is a test for it.
 
 A payment may name a card, unlike a deposit. The Payment tab offers no card field, so a
-hand-typed one writes none, but a payment read from the email knows which card it settled —
-and a line that refused the card would erase that the first time the row was edited.
+hand-typed one writes none, but a payment read from the email or from the Fidelity payment
+text knows which card it settled — and a line that refused the card would erase that the first
+time the row was edited.
+
+### Reading the text
+
+Fidelity's payment text carries the figure in a sentence instead, with no labels at all:
+
+```text
+Fidelity® Credit Card: A payment of $316.29 has been posted to your account ending in
+7224 on 10/13/2026. Msg&Data rates may apply. Reply STOP to cancel.
+```
+
+Every phrase between the figures is literal. There is no free-form descriptor to capture
+here, unlike the charge text, so the sentence is simply spelled out and a template change
+refuses rather than guesses. The amount is anchored between `A payment of` and `has been
+posted to your account ending in`, and the `Fidelity® Credit Card:` preamble is required
+alongside it: `account ending in` is ordinary banking English that any issuer may print, so
+on its own it is not evidence.
+
+**The charge text is the reason for that care, the way the Amex purchase alert is for the
+email.** It arrives from the same sender under the same preamble and carries a figure of its
+own, so the sentence is the only thing separating the two — and a body both parsers read
+would be one movement of money recorded twice. The registry runs the charge parser first, and
+both refusals are asserted rather than argued.
+
+Two things differ from the Amex email:
+
+- **The date is real.** The charge text carries no timestamp, so its rows read `Alerted`; a
+  payment text prints the posting date, so its rows read `Purchased`, like Amex's. It is read
+  strictly — `13/10/2026` and `02/30/2026` are refused rather than rolled forward into a
+  plausible-looking wrong day — and a refused or absent date costs the row its date, not the
+  row.
+- **The row is named `Fidelity payment`**, where the Amex one is `Amex payment`. In the feed
+  a payment shows `Payment` in place of a card bullet, so the merchant is also what tells the
+  two apart.
+
+Nothing else had to change for a second payment source. Both balances fold on the *kind* —
+`affectsBank` and `affectsCard` — so a payment settles the card and moves the bank wherever
+it came from, and the month's total excludes any of them.
+
+**Known and accepted.** The registry stops at the first parser that recognises anything, and
+that is deliberate — it is what stops two sources reading one body and counting it twice. Its
+order is therefore a precedence: charges first, then payments, then the rest. Nothing in the
+capture path can tell the difference, because each automation hands over one body, so this only
+bites when two messages are pasted into one entry — the earliest parser's alert is recorded and
+the rest of the body is not. Charges come first because a purchase is the ledger's primary
+record: losing one takes money out of the month as well as off the card, where losing a payment
+leaves a balance that is merely too high. The body stays in the journal either way, so the text
+of the dropped alert is still there to be re-read. Having the registry merge what several
+parsers find is the real fix if the paste case ever matters, and it belongs in the registry
+rather than in any one parser.
 
 ## Only real movements of money reach the ledger
 
@@ -507,7 +562,8 @@ already reported, a statement notice, an OTP — never becomes a ledger row, and
 app shows it to you.
 
 But it is **not discarded on arrival either**. Anything that is not a charge or a deposit is
-held in the raw journal for a week and then purged; charges and deposits are kept forever.
+held in the raw journal for a week and then purged; charges, deposits and payments are kept
+forever.
 
 The week is what keeps the recovery path alive. A retained body is re-parsed on every drain,
 so a charge that starts being recognised within the window is picked up with no special
@@ -638,10 +694,10 @@ would have been nothing left to notice it by.
 
 ## The parser
 
-`FidelityAlertParser` is a pure function — no store, no UI, no async — so it is fully
-testable without the app or the automation. Stage 3 will persist its output; today the
-journal screen calls it at display time, so nothing is stored and the journal remains the
-only source of truth.
+`FidelityAlertParser` and `FidelityPaymentParser` are pure functions — no store, no UI, no
+async — so they are fully testable without the app or the automation. The drain persists
+their output into SwiftData, and the journal screen re-parses the same text at display time,
+so the journal remains the only source of truth.
 
 **A rejected parse is better than a wrong number.** Where the input is ambiguous, the
 parser discards the match rather than guessing. A discarded alert is *visibly* absent from
@@ -698,8 +754,8 @@ Amex prints **five** card digits (`Account Ending: 21008`) where Fidelity prints
 field is `cardSuffix` and stores what the source gave rather than truncating — which would
 work for today's two cards and collide for someone else's.
 
-Amex also prints a real transaction date and the ledger uses it, where the Fidelity SMS
-carries none and falls back to arrival. Rows therefore read **Purchased** or **Alerted**.
+Amex also prints a real transaction date and the ledger uses it, where the Fidelity **charge**
+text carries none and falls back to arrival. Rows therefore read **Purchased** or **Alerted**.
 Arrival is the weaker signal for email in particular, because Apple Mail fetches Gmail on a
 schedule rather than by push.
 
@@ -719,10 +775,11 @@ Everything else is ordinary app work.
 
 ## Scope
 
-Only **charge** alerts are in scope. The card is configured to alert on charges and those
-are the only texts received, so the parser (Stage 2) needs only the `was charged` form.
-Declines, refunds, and other alert types are deliberately **not** handled — no review
-queues, no exclusion flags, no dedup paths for them.
+Two Fidelity texts are in scope — the charge (`was charged`) and the payment (`A payment of
+… has been posted to your account ending in`) — and nothing else is. Declines, refunds,
+authorizations, and other alert types are deliberately **not** handled: no review queues, no
+exclusion flags, no dedup paths for them. A posted **debit** alert is refused by name for
+exactly that reason, since only the literal `A payment of` is read as a payment.
 
 ---
 

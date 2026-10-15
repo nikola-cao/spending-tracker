@@ -69,9 +69,9 @@ final class Txn {
 
     /// The best-known time of the purchase.
     ///
-    /// For a source that prints a date (Amex), that date. Otherwise the moment the alert
-    /// arrived. The two are not the same claim, which is why `occurredAtIsFromMessage`
-    /// exists and why the row labels them differently.
+    /// For a source that prints a date — Amex, and a Fidelity payment text — that date.
+    /// Otherwise the moment the alert arrived. The two are not the same claim, which is why
+    /// `occurredAtIsFromMessage` exists and why the row labels them differently.
     ///
     /// The feed sorts on its calendar **day**, never on the instant — see `feedOrder` for why
     /// the time of day in here cannot be trusted.
@@ -122,7 +122,8 @@ extension Txn {
     /// Builds a ledger row from a parsed alert.
     ///
     /// `occurredAt` falls back to `receivedAt` only when the message carried no date of its
-    /// own — the Fidelity SMS. `receivedAt` is always the arrival, and is what the feed sorts on.
+    /// own — the Fidelity charge text. `receivedAt` is always the arrival, and is what the feed
+    /// sorts on.
     convenience init(from alert: ParsedAlert, receivedAt: Date) {
         self.init(
             amountMinor: alert.amountMinor,
@@ -218,16 +219,17 @@ extension Txn {
     /// the order the charges arrived in the app.
     ///
     /// The day is `occurredAt`'s calendar day — the purchase date when the source printed one
-    /// (Amex, and a hand-entered date), and the arrival day otherwise, since the Fidelity SMS
-    /// carries no date at all.
+    /// (Amex, a Fidelity payment text, and a hand-entered date), and the arrival day otherwise,
+    /// since the Fidelity charge text carries no date at all.
     ///
     /// Within a day the order is arrival, never a clock time, and that is the whole point. No
-    /// row in this ledger has a time of day that means anything: the two sources that print a
-    /// date print no time, so both parsers land those at noon, and the SMS prints nothing, so
-    /// its `occurredAt` *is* its arrival. Ordering by the instant therefore either compares
+    /// row in this ledger has a time of day that means anything: the sources that print a date
+    /// print no time, so their parsers land those at noon, and the charge text prints nothing,
+    /// so its `occurredAt` *is* its arrival. Ordering by the instant therefore either compares
     /// identical values or compares a real arrival against a fabricated noon — and the moment
     /// a single date-only row lands in a day it reshuffles the rows around it. Arrival is the
-    /// one signal that is always real, and for the SMS it is within seconds of the purchase.
+    /// one signal that is always real, and for the charge text it is within seconds of the
+    /// purchase.
     ///
     /// One comparison over a whole-row key, deliberately, rather than the pairwise rule "both
     /// have times → compare times, otherwise compare arrival". That rule is not transitive —

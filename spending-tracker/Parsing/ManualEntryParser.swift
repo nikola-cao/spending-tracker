@@ -47,8 +47,9 @@ import Foundation
 ///
 /// The date and the card are both **optional**: an empty field means "not given", which is
 /// different from a field that is present but wrong. A blank date leaves `occurredAt` nil and
-/// the ledger falls back to the moment the entry was made — the same fallback the Fidelity SMS
-/// uses, since that carries no date either. A blank card simply leaves the charge without one.
+/// the ledger falls back to the moment the entry was made — the same fallback the Fidelity
+/// charge text uses, since that carries no date either. A blank card simply leaves the charge
+/// without one.
 ///
 /// A deposit has no card at all, so a deposit line naming one is malformed rather than
 /// something to quietly drop.
