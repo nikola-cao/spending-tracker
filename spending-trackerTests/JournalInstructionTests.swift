@@ -255,17 +255,42 @@ struct JournalInstructionTests {
     /// or not this build can read it. A line that fails to parse is exactly the one that must
     /// not be dropped: it holds a decision and no screen can address it.
     @Test func everyPrefixIsRecognisedIncludingAnUnreadableLine() {
-        #expect(JournalInstructionParser.hasInstructionPrefix("Bank | 1200.00"))
-        #expect(JournalInstructionParser.hasInstructionPrefix("Edit | \(key) | 1.00 |  |  | X"))
-        #expect(JournalInstructionParser.hasInstructionPrefix("Category | \(key) | grocery | user"))
-        #expect(JournalInstructionParser.hasInstructionPrefix(
-            "MerchantCategory | grocery | ai | WHOLE FOODS"))
+        // **Every kind, by name.** The set of leading tokens is a list rather than a switch, so a
+        // kind missing from it is not an error anywhere — it just stops being kept by the purge,
+        // and a value the user set disappears a week later. That is a silent wrong figure, so
+        // this test names each one rather than sampling.
+        let readable = [
+            JournalInstructionParser.composeBankBalance(120_000),
+            JournalInstructionParser.composeCardBalance(24_000),
+            JournalInstructionParser.composeEdit(
+                occurrenceKey: key, merchant: "X", amount: "1.00", date: nil, cardSuffix: ""),
+            JournalInstructionParser.composeCategory(occurrenceKey: key, label: "grocery"),
+            JournalInstructionParser.composeMerchantCategory(
+                merchant: "WHOLE FOODS", label: "grocery", source: .ai),
+        ]
+        for line in readable {
+            #expect(JournalInstructionParser.hasInstructionPrefix(line), "\(line)")
+        }
 
-        // Written by a version whose format this one does not know: unreadable, and still kept
-        // forever, because it holds a decision that exists nowhere else.
-        let unreadable = "Category | \(key) | grocery | user | something-new"
-        #expect(JournalInstructionParser.hasInstructionPrefix(unreadable))
-        #expect(JournalInstructionParser.parse(unreadable) == nil)
+        // Unreadable, and still kept forever, because each holds a value that exists nowhere else.
+        //
+        // Note the shapes. `Edit` and `MerchantCategory` put the merchant last precisely so a
+        // free-text field can hold anything, which means an extra field is absorbed into the
+        // merchant rather than rejected — a future version's line of those two kinds stays
+        // *readable*, and the risk for them is a misread rather than a disappearance. `Bank`,
+        // `Card` and `Category` have fixed field counts, so for them the unreadable case is
+        // exactly "one more field than this version knows about", which is what these are.
+        let unreadable = [
+            "Bank | abc",
+            "Card | abc",
+            "Edit | \(key) | 1.00 | 23/09/2026 |  | X",
+            "Category | \(key) | grocery | user | extra",
+            "MerchantCategory | Grocery | ai | WHOLE FOODS",
+        ]
+        for line in unreadable {
+            #expect(JournalInstructionParser.hasInstructionPrefix(line), "\(line)")
+            #expect(JournalInstructionParser.parse(line) == nil, "should not be readable: \(line)")
+        }
     }
 
     @Test func anAlertBodyHasNoInstructionPrefix() {

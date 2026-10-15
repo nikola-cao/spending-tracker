@@ -1197,7 +1197,9 @@ struct LedgerStoreTests {
         let (ledger, _, url) = try makeStore()
 
         try appendAlert(charge("40.00", "BREEZE COFFEE"), to: url)
-        try appendAlert(JournalInstructionParser.composeCardBalance(120_000), to: url)
+        try appendAlert(
+            JournalInstructionParser.composeCardBalance(120_000),
+            note: JournalRecord.manualMarker, to: url)
         try appendAlert(charge("10.00", "LATER COFFEE"), to: url)
         ledger.drain()
 
@@ -1210,8 +1212,12 @@ struct LedgerStoreTests {
     @Test func theLastCardBalanceLineWins() throws {
         let (ledger, _, url) = try makeStore()
 
-        try appendAlert(JournalInstructionParser.composeCardBalance(10_000), to: url)
-        try appendAlert(JournalInstructionParser.composeCardBalance(25_000), to: url)
+        try appendAlert(
+            JournalInstructionParser.composeCardBalance(10_000),
+            note: JournalRecord.manualMarker, to: url)
+        try appendAlert(
+            JournalInstructionParser.composeCardBalance(25_000),
+            note: JournalRecord.manualMarker, to: url)
         ledger.drain()
 
         #expect(ledger.cardBalanceMinor == 25_000)
@@ -1296,6 +1302,7 @@ struct LedgerStoreTests {
         try appendAlert(
             JournalInstructionParser.composeCardBalance(50_000),
             at: Date().addingTimeInterval(-30 * 24 * 60 * 60),
+            note: JournalRecord.manualMarker,
             to: url
         )
 

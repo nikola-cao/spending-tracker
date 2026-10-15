@@ -311,10 +311,11 @@ spending, so neither is filed — a payment under Dining would make that figure 
 left unset and show no chip at all, rather than the word "Uncategorized", because they are not
 awaiting an answer. The filter matches charges only, `Uncategorized` included.
 
-**The three figures at the top never move when the filter changes.** They read the month, not the
-filtered rows: a Balance narrowed to dining sitting above an unfiltered Bank would make
-`Remaining` mean nothing. What one category cost is the subtotal in the list's own header, which
-is the figure that is honestly about the rows under it.
+**The month's spending, and the three positions under it, never move when the filter changes.**
+They read the month, not the filtered rows: a Balance narrowed to dining sitting above an
+unfiltered Bank would make `Remaining` — the bank less what the cards owe — mean nothing. What one
+category cost is the subtotal in the list's own header, which is the figure that is honestly about
+the rows under it.
 
 ### Classifying a merchant automatically
 

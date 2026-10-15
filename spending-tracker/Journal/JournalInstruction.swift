@@ -147,10 +147,16 @@ nonisolated enum JournalInstructionParser {
 
     /// Every leading token the app writes to itself, for the retention purge.
     ///
-    /// One list, so a new instruction kind cannot be added without the purge learning about it —
-    /// which is the failure that would drop a user's decision off the end of the journal a week
-    /// later with nothing left to notice it by.
-    static let prefixes = [bankPrefix, editPrefix, categoryPrefix, merchantCategoryPrefix]
+    /// **One list, and adding an instruction kind means adding it here.** That is the whole
+    /// reason it is a list rather than three separate checks: a kind that is missing from it is
+    /// not rejected or reported anywhere — it simply looks like a merchant's receipt to the
+    /// purge, ages out after a week, and takes a value the user set with it. `Card` was missing
+    /// from this list for exactly one rebase, and an old card-balance line being dropped is a
+    /// balance that quietly restates to zero. The compiler cannot see it; only the test in
+    /// `JournalInstructionTests` that names every kind can.
+    static let prefixes = [
+        bankPrefix, cardPrefix, editPrefix, categoryPrefix, merchantCategoryPrefix,
+    ]
 
     private static let delimiter = " | "
 

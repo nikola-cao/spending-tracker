@@ -67,11 +67,12 @@ struct ContentView: View {
     /// would have to be rebuilt every time the choice changed, and the ordering has to be applied
     /// in Swift anyway.
     ///
-    /// **The three figures at the top deliberately do not read this.** They read
-    /// `monthTransactions`, so choosing a category cannot restate Balance, Bank or Remaining: a
-    /// Balance narrowed to dining sitting above an unfiltered Bank would make Remaining mean
-    /// nothing at all. What one category cost is answered by the subtotal in the list's own
-    /// header, which is the figure that is honestly about the rows below it.
+    /// **The month's spending, and the three positions under it, deliberately do not read this.**
+    /// They read `monthTransactions`, so choosing a category cannot restate any of them: a
+    /// Balance narrowed to dining sitting above an unfiltered Bank would make `Remaining` — the
+    /// bank less what the cards owe — mean nothing at all. What one category cost is answered by
+    /// the subtotal in the list's own header, which is the figure that is honestly about the rows
+    /// below it.
     ///
     /// A payment or a deposit matches no category, **Uncategorized included**. Those rows are not
     /// awaiting an answer — the question does not apply to them — so sweeping them into the
@@ -570,8 +571,8 @@ struct ContentView: View {
         let noun = feedRows.count == 1 ? "transaction" : "transactions"
         let count = "\(feedRows.count) \(noun)"
         // Only while a filter is on. The subtotal is the honest answer to "what did dining cost
-        // this month", and it belongs on the rows it is about rather than on the three figures
-        // at the top, which stay a statement about the whole month whatever is being shown.
+        // this month", and it belongs on the rows it is about rather than on the figures above
+        // them, which stay a statement about the whole month whatever is being shown.
         return categoryFilter == nil ? count : "\(count) · \(filteredSubtotal)"
     }
 
