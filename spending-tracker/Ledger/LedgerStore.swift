@@ -310,19 +310,29 @@ final class LedgerStore {
     private static func instructions(
         from records: [JournalRecord]
     ) -> (bank: Int?, card: Int?, edits: [JournalInstruction.Edit], categories: CategoryDecisions) {
-        // Collapsed by invocation, exactly as `ingest` collapses it — and this was a latent bug
-        // until the card balance arrived. One invocation used to write an `enter` and a `result`
-        // line carrying the SAME body, and this walk re-parses every line it is handed, so a
-        // charge captured back then is summed TWICE unless the pair is collapsed. A card balance
-        // reading double the feed it sits above is precisely the plausible-looking wrong total
-        // this ledger is built to make impossible. It went unnoticed because the only kinds the
-        // fold used to sum were deposits and payments, which postdate the pair entirely.
         var seenInvocations = Set<UUID>()
-        let lines = records.compactMap { record -> (runID: UUID, body: String)? in
+
+        // `isAppWritten` is carried alongside the body because **a line a source sent is
+        // evidence, never a command**. Instruction lines are the app writing to its own journal
+        // and are stamped `manualMarker`; a captured alert is written by the intent with an empty
+        // note. Without the distinction, a message whose text happened to begin `Bank |` or
+        // `Category |` would be honoured as an instruction — a body from outside deciding the
+        // user's bank balance, or filing a category, by nothing more than how it happens to
+        // start. Every instruction writer has used the marker since the balance line was first
+        // journalled, so nothing legitimate is excluded by asking.
+        let lines = records.compactMap { record -> (runID: UUID, body: String, isAppWritten: Bool)? in
             let body = record.trimmedBody
             guard !body.isEmpty else { return nil }
+            // Collapsed by invocation, exactly as `ingest` collapses it — and this was a latent
+            // bug until the card balance arrived. One invocation used to write an `enter` and a
+            // `result` line carrying the SAME body, and this walk re-parses every line it is
+            // handed, so a charge captured back then is summed TWICE unless the pair is
+            // collapsed. A card balance reading double the feed it sits above is precisely the
+            // plausible-looking wrong total this ledger is built to make impossible. It went
+            // unnoticed because the only kinds the fold used to sum were deposits and payments,
+            // which postdate the pair entirely.
             guard seenInvocations.insert(record.runID).inserted else { return nil }
-            return (record.runID, body)
+            return (record.runID, body, record.note == JournalRecord.manualMarker)
         }
 
         // The edits and the categories are gathered first, because an edit may supersede a
@@ -331,7 +341,7 @@ final class LedgerStore {
         // quietly ignore the correction.
         var edits: [JournalInstruction.Edit] = []
         var categories = CategoryDecisions()
-        for line in lines {
+        for line in lines where line.isAppWritten {
             switch JournalInstructionParser.parse(line.body) {
             case .edit(let edit)?:
                 edits.append(edit)
@@ -351,7 +361,13 @@ final class LedgerStore {
         var bank: Int?
         var card: Int?
         for line in lines {
-            switch JournalInstructionParser.parse(line.body) {
+            // A captured body is never read as an instruction, so it always takes the `nil` arm
+            // below — which is what it is. See the note on `isAppWritten` above.
+            let instruction = line.isAppWritten
+                ? JournalInstructionParser.parse(line.body)
+                : nil
+
+            switch instruction {
             case .setBankBalance(let minor)?:
                 bank = minor
             case .setCardBalance(let minor)?:
@@ -460,7 +476,17 @@ final class LedgerStore {
     /// the user is most likely looking at.
     ///
     /// A row the user cleared by hand is **not** waiting. See `CategoryDecisions.Decision`.
-    func uncategorizedMerchants(limit: Int) -> [CategoryRequest] {
+    ///
+    /// - Parameter isWanted: Whether a waiting merchant should be counted and returned at all.
+    ///   Applied **before** the limit, and that order is the point. Filtering afterwards — take
+    ///   the newest five hundred, then drop the ones in a backoff — means a wall of throttled
+    ///   merchants hides every due one behind them, and the pass does nothing while the user
+    ///   watches a backlog that will not move. Counting only what is wanted makes the limit mean
+    ///   "the newest N that can actually be asked about".
+    func uncategorizedMerchants(
+        limit: Int,
+        where isWanted: (String) -> Bool = { _ in true }
+    ) -> [CategoryRequest] {
         let decisions = Self.instructions(
             from: JournalStore.readAll(from: journalURL)).categories
 
@@ -477,6 +503,7 @@ final class LedgerStore {
 
             let key = MerchantKey.normalize(txn.merchant)
             guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            guard isWanted(key) else { continue }
 
             waiting.append(CategoryRequest(key: key, merchant: txn.merchant))
             if waiting.count >= limit { break }

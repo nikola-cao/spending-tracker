@@ -83,6 +83,15 @@ nonisolated struct DeepSeekClient: CategoryClient {
 
     // MARK: - The call
 
+    /// Makes one request.
+    ///
+    /// **The framing runs on the caller's actor; only the wait is off it.** This target builds
+    /// with `SWIFT_APPROACHABLE_CONCURRENCY`, under which a `nonisolated async` function inherits
+    /// the caller's isolation — so encoding the body and reading the reply both happen on the
+    /// main actor, and only the `await` on the transport suspends away from it. That is fine here
+    /// (the payload is a few hundred bytes of JSON) and is written down because the obvious
+    /// reading of `nonisolated` — that all of it runs elsewhere — is wrong under these settings.
+    /// Moving it off would mean `@concurrent` on this method *and* on the protocol requirement.
     func classify(_ requests: [CategoryRequest]) async throws -> [String: String] {
         guard !requests.isEmpty else { return [:] }
 
@@ -245,15 +254,23 @@ nonisolated struct DeepSeekClient: CategoryClient {
     /// readable — it is being written now, and it can simply be refused.
     static func labels(from content: String, for requests: [CategoryRequest]) -> [String: String] {
         guard let object = firstJSONObject(in: content),
-              let raw = try? JSONDecoder().decode([String: String].self, from: object)
+              let decoded = try? JSONSerialization.jsonObject(with: object) as? [String: Any]
         else { return [:] }
 
         let asked = Set(requests.map(\.key))
         var labels: [String: String] = [:]
-        for (key, value) in raw {
-            let token = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            // Only for ids that were actually asked about: a reply that invents an id must not
-            // be able to write a line, even a well-formed one.
+        for (key, value) in decoded {
+            // **Only a string counts as an answer**, and a value of any other type is read as
+            // this one merchant being declined.
+            //
+            // Decoding into `[String: String]` would have been shorter and would have been
+            // wrong in a way that is easy to miss: one `null`, number, array or nested object
+            // anywhere in the reply makes the whole decode throw, so a single bad value would
+            // discard the answers for all forty merchants beside it. That is the exact trade
+            // `CategoryClient.classify` promises not to make.
+            guard let text = value as? String else { continue }
+
+            let token = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard asked.contains(key), SpendingCategory.isKnown(token) else { continue }
             labels[key] = token
         }
@@ -265,6 +282,12 @@ nonisolated struct DeepSeekClient: CategoryClient {
     /// Balanced rather than "up to the last brace", and string-aware: the payload is a map of
     /// merchant names, and a name containing a brace or a quote is not far-fetched. A scanner
     /// that counted braces inside a string literal would cut the object in the wrong place.
+    ///
+    /// The two guards that make it survive *prose around* the object are both load-bearing, and
+    /// both were missing at first. Quotes are only tracked once the object has been entered, so
+    /// an odd quote in the sentence before it cannot flip the state and hide the closing brace.
+    /// And a `}` at depth zero is skipped rather than treated as an error, because a stray one
+    /// in that sentence would otherwise make a perfectly good object unreachable.
     static func firstJSONObject(in text: String) -> Data? {
         var depth = 0
         var start: String.Index?
@@ -275,17 +298,19 @@ nonisolated struct DeepSeekClient: CategoryClient {
             let character = text[index]
 
             if escaped { escaped = false; continue }
-            if inString, character == "\\" { escaped = true; continue }
-            if character == "\"" { inString.toggle(); continue }
-            if inString { continue }
+
+            if depth > 0 {
+                if inString, character == "\\" { escaped = true; continue }
+                if character == "\"" { inString.toggle(); continue }
+                if inString { continue }
+            }
 
             if character == "{" {
                 if depth == 0 { start = index }
                 depth += 1
-            } else if character == "}" {
+            } else if character == "}", depth > 0 {
                 depth -= 1
                 if depth == 0, let start { return Data(text[start...index].utf8) }
-                if depth < 0 { return nil }
             }
         }
         return nil
@@ -314,8 +339,9 @@ nonisolated struct DeepSeekClient: CategoryClient {
 /// side only — which would not fail to compile, and would silently send the wrong request.
 ///
 /// `nonisolated` on every one: this target defaults unannotated types to `@MainActor`, and with
-/// inferred isolated conformances an unannotated `Codable` here would only be encodable from the
-/// main actor — which is precisely where the call must not be built from.
+/// inferred isolated conformances an unannotated `Codable` here would get a main-actor-isolated
+/// conformance — tying these types to one actor for no reason, and making it impossible to move
+/// the request off it later without revisiting all of them.
 private nonisolated struct ChatRequest: Encodable {
 
     struct Message: Encodable {

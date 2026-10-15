@@ -66,17 +66,12 @@ final class CategoryEngine {
 
     /// How many requests one pass will make.
     ///
-    /// Bounded on purpose, and the bound is stated on the Diagnostics screen rather than left
-    /// implicit: a first pass over a long history is thousands of merchants, and one that tried
-    /// to do them all at once would hold the radio open and be killed mid-flight. Whatever is
-    /// left over is simply asked again at the next foreground, because the backlog is a question.
+    /// Bounded on purpose, and the bound is stated on the Diagnostics settings screen rather than
+    /// left implicit: a first pass over a long history is thousands of merchants, and one that
+    /// tried to do them all at once would hold the radio open and be killed mid-flight. Whatever
+    /// is left over is simply asked again at the next foreground, because the backlog is a
+    /// question.
     static let maxRequestsPerRun = 8
-
-    /// How many waiting merchants are looked at before the retry schedule is applied.
-    ///
-    /// Larger than one run's worth, so that merchants sitting out a backoff cannot hide the ones
-    /// behind them that are due. A personal ledger will not approach this.
-    static let candidateLimit = 500
 
     private let ledger: LedgerStore
 
@@ -137,8 +132,13 @@ final class CategoryEngine {
         guard let client = clientProvider() else { return }
 
         let timestamp = now()
-        let due = ledger.uncategorizedMerchants(limit: Self.candidateLimit)
-            .filter { CategorizationBackoff.isDue($0.key, now: timestamp) }
+        // The retry schedule is applied *inside* the fetch, not to its result. Taking the newest
+        // few hundred and then dropping the throttled ones would let a wall of merchants in
+        // backoff hide every due merchant behind them, and the pass would sit doing nothing while
+        // the user watched a backlog that never moved.
+        let due = ledger.uncategorizedMerchants(limit: Self.merchantsPerRun) {
+            CategorizationBackoff.isDue($0, now: timestamp)
+        }
         guard !due.isEmpty else {
             outcome = .idle
             return
@@ -200,9 +200,17 @@ final class CategoryEngine {
         }
     }
 
-    /// Forgets every wait and asks again now — the escape hatch on Diagnostics, for a user who
-    /// has just fixed their network and does not want to pull-to-refresh until it takes.
+    /// Forgets every wait and asks again now — the escape hatch for a user who has just fixed
+    /// their network or their key and does not want to wait out a backoff.
+    ///
+    /// Refused while a pass is already in flight, rather than clearing and then having the
+    /// request dropped by the single-flight guard inside `run()`. The difference is the whole
+    /// value of the button: clearing first and skipping the pass would throw away every
+    /// merchant's wait and give the user nothing for it, which is worse than doing nothing.
+    /// There is no `await` between this check and the guard in `run()`, so on the main actor the
+    /// two cannot disagree.
     func tryAgainNow() async {
+        guard !isRunning else { return }
         CategorizationBackoff.clearAll()
         await run()
     }

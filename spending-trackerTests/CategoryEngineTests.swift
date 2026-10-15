@@ -76,9 +76,9 @@ struct CategoryEngineTests {
         return (LedgerStore(container: container, journalURL: url), container, url)
     }
 
-    private func appendAlert(_ body: String, to url: URL) throws {
+    private func appendAlert(_ body: String, at receivedAt: Date = Date(), to url: URL) throws {
         let record = JournalRecord(
-            id: UUID(), runID: UUID(), phase: JournalRecord.capturePhase, receivedAt: Date(),
+            id: UUID(), runID: UUID(), phase: JournalRecord.capturePhase, receivedAt: receivedAt,
             processName: "spending-tracker", bundleIdentifier: "com.nikola.spending-tracker",
             isMainThread: true, charCount: body.count, utf8ByteCount: body.utf8.count,
             hasFidelityPrefix: body.hasPrefix("Fidelity"),
@@ -212,6 +212,39 @@ struct CategoryEngineTests {
     }
 
     // MARK: - Batching
+
+    /// **The retry filter is applied before the limit, not after it.**
+    ///
+    /// Taking the newest few hundred merchants and then dropping the throttled ones means a wall
+    /// of merchants in backoff hides every due merchant behind them — the pass returns nothing,
+    /// does nothing, and the backlog the user is staring at never moves. Counting only what is
+    /// wanted is what makes the limit mean "the newest N that can actually be asked about".
+    @Test func theLimitCountsOnlyMerchantsThatCanBeAskedAbout() async throws {
+        CategorizationBackoff.clearAll()
+        let (ledger, _, url) = try makeStore()
+        // Distinct arrival times, deliberately. Appended in a loop they would share a timestamp,
+        // and "newest first" would then be arbitrary among the ties — so the test would be
+        // asserting an order the store never promised.
+        let start = Date(timeIntervalSince1970: 1_780_000_000)
+        for index in 0..<6 {
+            try appendAlert(
+                charge("1.00", "MERCHANT\(index)"),
+                at: start.addingTimeInterval(Double(index)),
+                to: url)
+        }
+        ledger.drain()
+
+        // Unfiltered, the window fills with the newest and the older ones are unreachable.
+        let newest = ledger.uncategorizedMerchants(limit: 3).map(\.key)
+        #expect(Set(newest) == ["MERCHANT5", "MERCHANT4", "MERCHANT3"], "\(newest)")
+
+        // Filtered to the oldest three — the ones a backoff would be hiding — they come back.
+        let due = ledger.uncategorizedMerchants(limit: 3) {
+            ["MERCHANT0", "MERCHANT1", "MERCHANT2"].contains($0)
+        }
+        #expect(Set(due.map(\.key)) == ["MERCHANT0", "MERCHANT1", "MERCHANT2"],
+                "\(due.map(\.key))")
+    }
 
     @Test func merchantsAreSentInBatches() async throws {
         CategorizationBackoff.clearAll()
@@ -363,6 +396,17 @@ struct CategoryEngineTests {
                 "this test only proves anything if the argument is not the reason")
         #expect(CategoryEngine.isSuppressed,
                 "XCTest is loaded in this process, so the engine should be suppressed")
+    }
+
+    /// The tripwire for the one hole the XCTest check cannot cover.
+    ///
+    /// A UI test launches the app as a separate process that does not link XCTest, so that
+    /// process is only suppressed because the UI suite passes the argument — and it has to spell
+    /// the string out, because a UI-test bundle cannot import this module. Renaming the constant,
+    /// or changing its value, would therefore unprotect the UI suite **silently**. This fails
+    /// first, and points at the literal in `spending_trackerUITests.swift`.
+    @Test func theSuppressionArgumentIsNotRenamed() {
+        #expect(CategoryEngine.suppressArgument == "-disableCategorization")
     }
 
     @Test func tryingAgainNowForgetsTheWait() async throws {

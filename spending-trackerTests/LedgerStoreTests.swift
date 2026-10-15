@@ -36,13 +36,21 @@ struct LedgerStoreTests {
     /// `at` places the alert at a chosen arrival time, which is what the feed sorts on. The
     /// record is built directly rather than via the `.diagnostic` convenience, which always
     /// stamps `Date()`.
+    ///
+    /// `note` defaults to empty because that is what a captured alert carries — the intent writes
+    /// an empty note. **A line the app wrote to itself must say so**: the drain reads instructions
+    /// only from lines stamped `manualMarker`, because a body a source sent is evidence and never
+    /// a command. A fixture that writes a `Bank |` or `Category |` line without the marker is
+    /// describing something no version of this app has ever produced.
     private func appendAlert(
         _ body: String,
         runID: UUID = UUID(),
         at receivedAt: Date = Date(),
+        note: String = "",
         to url: URL
     ) throws {
-        try appendRecord(body, runID: runID, phase: JournalRecord.capturePhase, at: receivedAt, to: url)
+        try appendRecord(
+            body, runID: runID, phase: JournalRecord.capturePhase, at: receivedAt, note: note, to: url)
     }
 
     /// Writes an alert the way versions before single-line capture did: an `enter`/`result`
@@ -63,6 +71,7 @@ struct LedgerStoreTests {
         runID: UUID,
         phase: String,
         at receivedAt: Date,
+        note: String = "",
         to url: URL
     ) throws {
         let record = JournalRecord(
@@ -81,7 +90,7 @@ struct LedgerStoreTests {
             appGroupAvailable: false,
             journalDirectory: url.deletingLastPathComponent().path,
             rawText: body,
-            note: ""
+            note: note
         )
         try JournalStore.append(record, to: url)
     }
@@ -1089,6 +1098,7 @@ struct LedgerStoreTests {
         try appendAlert(
             JournalInstructionParser.composeBankBalance(50_000),
             at: Date().addingTimeInterval(-30 * 24 * 60 * 60),
+            note: JournalRecord.manualMarker,
             to: url
         )
 
@@ -1576,7 +1586,12 @@ struct LedgerStoreTests {
     /// How a line written by another version of the app arrives, and how these tests say what
     /// the journal holds without going through the writers that are themselves under test.
     private func appendInstruction(_ body: String, to url: URL) throws {
-        try appendRecord(body, runID: UUID(), phase: JournalRecord.capturePhase, at: Date(), to: url)
+        // Stamped the way every instruction writer in the app stamps it. Without the marker the
+        // drain reads the line as a captured body — which is the whole point of the marker — and
+        // a fixture that omitted it would be testing a line the app cannot produce.
+        try appendRecord(
+            body, runID: UUID(), phase: JournalRecord.capturePhase, at: Date(),
+            note: JournalRecord.manualMarker, to: url)
     }
 
     private func journalBodies(_ url: URL) -> [String] {

@@ -105,6 +105,41 @@ struct DeepSeekClientTests {
         #expect(DeepSeekClient.labels(from: content, for: asked) == ["CHICK FIL A": "dining"])
     }
 
+    /// **One bad value must not cost the other thirty-nine their answers.** This is why the reply
+    /// is not decoded as `[String: String]`: a single `null`, number, array or object anywhere in
+    /// it would make that decode throw, and forty merchants would be declined over one of them.
+    @Test func oneValueThatIsNotAStringDoesNotDiscardTheBatch() {
+        let content = #"{"WHOLE FOODS MKT":null,"CHICK FIL A":"dining","THIRD":42,"FOURTH":{}}"#
+        #expect(DeepSeekClient.labels(from: content, for: asked) == ["CHICK FIL A": "dining"])
+    }
+
+    /// Prose around the object may hold anything, including characters that would confuse a
+    /// scanner that started counting before the object did.
+    ///
+    /// Three separate tests rather than one parameterized case, because a parameterized failure
+    /// names the test and not the argument — and these three fail for completely different
+    /// reasons, which is exactly what a name has to tell you apart.
+    @Test func aStrayClosingBraceInTheProseDoesNotHideTheObject() {
+        let content = "Here } you go: {\"CHICK FIL A\":\"dining\"}"
+        #expect(DeepSeekClient.firstJSONObject(in: content) != nil, "no object found")
+        #expect(DeepSeekClient.labels(from: content, for: asked) == ["CHICK FIL A": "dining"])
+    }
+
+    @Test func anOddQuoteInTheProseDoesNotHideTheObject() {
+        let content = "He said \"this is fine: {\"CHICK FIL A\":\"dining\"}"
+        #expect(DeepSeekClient.firstJSONObject(in: content) != nil, "no object found")
+        #expect(DeepSeekClient.labels(from: content, for: asked) == ["CHICK FIL A": "dining"])
+    }
+
+    @Test func bracesBeforeTheObjectDoNotHideIt() {
+        // Built by concatenation on purpose: written inline this reads as `}}{{"…`, which is two
+        // opening braces and an unbalanced object — so the test would be asserting that a
+        // malformed reply parses, and would fail for a reason that has nothing to do with prose.
+        let content = "}}" + "{\"CHICK FIL A\":\"dining\"}"
+        #expect(DeepSeekClient.firstJSONObject(in: content) != nil, "no object found")
+        #expect(DeepSeekClient.labels(from: content, for: asked) == ["CHICK FIL A": "dining"])
+    }
+
     // MARK: - Building the request
 
     @Test func theRequestAsksForJsonAndSaysWhatTheCategoriesAre() throws {

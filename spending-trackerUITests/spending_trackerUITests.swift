@@ -85,8 +85,7 @@ final class spending_trackerUITests: XCTestCase {
     /// instead, and checks it names a month.
     @MainActor
     func testLedgerIsTheFirstScreen() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         let title = app.buttons["Month"]
         XCTAssertTrue(title.waitForExistence(timeout: 10))
@@ -97,8 +96,7 @@ final class spending_trackerUITests: XCTestCase {
     /// switches the whole screen — total, list and all — to that month.
     @MainActor
     func testTheMonthPickerSwitchesWhichMonthIsShown() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         let picker = app.buttons["Month"]
         XCTAssertTrue(picker.waitForExistence(timeout: 10))
@@ -126,8 +124,7 @@ final class spending_trackerUITests: XCTestCase {
 
     @MainActor
     func testManualEntryScreenOpens() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         let add = app.buttons["Add manually"]
         XCTAssertTrue(add.waitForExistence(timeout: 10))
@@ -148,8 +145,7 @@ final class spending_trackerUITests: XCTestCase {
     /// The card rule the form enforces: optional, but four or five digits when given.
     @MainActor
     func testCardFieldIsOptionalButValidated() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
         app.buttons["Add manually"].tap()
 
         let merchant = app.textFields["Merchant"]
@@ -180,8 +176,7 @@ final class spending_trackerUITests: XCTestCase {
     /// then refused on save.
     @MainActor
     func testCardFieldStopsAtFiveDigits() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
         app.buttons["Add manually"].tap()
 
         let card = app.textFields["Last 4 or 5 digits"]
@@ -197,8 +192,7 @@ final class spending_trackerUITests: XCTestCase {
     /// is chosen when it is on.
     @MainActor
     func testDateCanBeTurnedOff() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
         app.buttons["Add manually"].tap()
 
         let toggle = app.switches["Set a purchase date"]
@@ -225,8 +219,7 @@ final class spending_trackerUITests: XCTestCase {
     /// nothing.
     @MainActor
     func testAddThenSwipeToDeleteACharge() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         app.buttons["Add manually"].tap()
 
@@ -262,8 +255,7 @@ final class spending_trackerUITests: XCTestCase {
     /// depend on what happens to be in the store, and rather than the month, which is dynamic.
     @MainActor
     func testTotalSpendSectionIsShown() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         XCTAssertTrue(app.staticTexts["This Month's Spending"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Balance"].exists)
@@ -276,8 +268,7 @@ final class spending_trackerUITests: XCTestCase {
     /// that works.
     @MainActor
     func testBankBalanceCanBeSet() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         let bank = app.buttons["Bank balance"]
         XCTAssertTrue(bank.waitForExistence(timeout: 10))
@@ -314,8 +305,7 @@ final class spending_trackerUITests: XCTestCase {
     /// back on the row it came from.
     @MainActor
     func testATransactionCanBeEditedByTappingIt() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         app.buttons["Add manually"].tap()
         replaceText(in: app.textFields["Merchant"], with: "UITEST EDITME")
@@ -352,8 +342,7 @@ final class spending_trackerUITests: XCTestCase {
     /// has its own tab, its own sign rule, and its own arithmetic.
     @MainActor
     func testDepositAddsToAndSubtractsFromTheBank() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         // Pinned first, so the assertions below do not depend on whatever an earlier run left
         // in UserDefaults.
@@ -406,8 +395,7 @@ final class spending_trackerUITests: XCTestCase {
     /// compiles perfectly and does none of it passes every unit test in the target.
     @MainActor
     func testDeleteALineFromTheRawJournal() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         // A hand-typed alert takes the same path as a captured one, and lands in the journal.
         app.buttons["Add manually"].tap()
@@ -458,8 +446,7 @@ final class spending_trackerUITests: XCTestCase {
 
     @MainActor
     func testDiagnosticsScreenOpens() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         let more = app.buttons["More"]
         XCTAssertTrue(more.waitForExistence(timeout: 10))
@@ -485,8 +472,7 @@ final class spending_trackerUITests: XCTestCase {
     /// this one already did exactly that before it was scoped.
     @MainActor
     func testAChargeCanBeCategorizedAndThenFilteredFor() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         let merchant = "UITEST CAT \(UUID().uuidString.prefix(6))"
 
@@ -568,8 +554,7 @@ final class spending_trackerUITests: XCTestCase {
     /// state every other test in this file runs in.
     @MainActor
     func testCategorizationScreenOpensWithNoKeyConfigured() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         let more = app.buttons["More"]
         XCTAssertTrue(more.waitForExistence(timeout: 10))
@@ -595,5 +580,27 @@ final class spending_trackerUITests: XCTestCase {
         XCTAssertTrue(categorize.waitForExistence(timeout: 5))
         XCTAssertFalse(categorize.isEnabled,
                        "a pass must not be offered with nothing to make it with")
+    }
+
+    /// The app, launched with the classifier switched firmly off.
+    ///
+    /// **The argument is load-bearing, not belt-and-braces.** `CategoryEngine` also refuses to
+    /// run when XCTest is loaded, and that covers the unit tests — they run inside this app's own
+    /// binary. A UI test launches the app as a *separate* process that does not link XCTest, so
+    /// that check cannot see it. Without this argument the app under test is free to classify,
+    /// and a key pasted into the simulator by hand — the case `CategoryEngine.isSuppressed`
+    /// explicitly anticipates — would put real merchant descriptors, and real billed requests,
+    /// on the wire on every run of this suite.
+    ///
+    /// The literal is repeated rather than read from `CategoryEngine.suppressArgument`, because a
+    /// UI-test bundle does not link the app module and cannot import it. That leaves renaming the
+    /// constant able to unprotect this suite silently, so a unit test asserts the literal is
+    /// still the same string — `CategoryEngineTests.theSuppressionArgumentIsNotRenamed`.
+    @MainActor
+    private func launchApp() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments.append("-disableCategorization")
+        app.launch()
+        return app
     }
 }
