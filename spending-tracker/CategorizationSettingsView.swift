@@ -89,15 +89,17 @@ struct CategorizationSettingsView: View {
     /// Said plainly, and not folded into a footer somewhere.
     ///
     /// This is the one part of the feature that cannot be taken back once it has happened: a
-    /// merchant descriptor is a small piece of a person's life — where they shop, who they pay —
-    /// and it is being handed to a third party. The amount, the date, the card and the Venmo
-    /// descriptors are all withheld, which is worth saying too, because "what exactly leaves my
-    /// phone" is the question someone would actually have.
+    /// descriptor is a small piece of a person's life — where they shop, what they bought — and
+    /// it is being handed to a third party. What is *withheld* is worth saying too, because
+    /// "what exactly leaves my phone" is the question someone would actually have — and since
+    /// person-to-person payments are now categorised, the fact that only their note travels is
+    /// the part most worth stating.
     private var privacySection: some View {
         Section {
-            Text("Merchant names are sent to DeepSeek to be categorized. Amounts, dates and card "
-                 + "digits stay on the phone. Payments, deposits and person-to-person rows are "
-                 + "never sent at all — and never categorized.")
+            Text("Transaction descriptions are sent to DeepSeek to be categorized. For a "
+                 + "person-to-person payment that is the note — \"Dinner\", \"Panda\" — and never "
+                 + "the person's name. Amounts, dates and card digits stay on the phone. Card "
+                 + "payments are never sent at all.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -110,7 +112,7 @@ struct CategorizationSettingsView: View {
             row("Classification", outcomeText)
             row("Filed by you", "\(counts.byPerson)")
             row("Filed by the model", "\(counts.byModel)")
-            row("Waiting", "\(counts.waiting) charges, \(counts.merchantsWaiting) merchants")
+            row("Waiting", "\(counts.waiting) transactions, \(counts.merchantsWaiting) descriptions")
             row("Merchant rules", "\(counts.userRules) yours, \(counts.modelRules) from the model")
         } header: {
             Text("Status")

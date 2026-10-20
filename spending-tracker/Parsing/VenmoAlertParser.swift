@@ -138,6 +138,33 @@ nonisolated enum VenmoAlertParser {
         note.isEmpty ? "Venmo: \(name)" : "Venmo: \(name) - \(note)"
     }
 
+    /// The note inside a merchant string this parser built, or nil when it is not one.
+    ///
+    /// The parser owns the shape in **both directions** — it composes `Venmo: <name> - <note>`
+    /// and is the only thing that reads it back — so a change to the format cannot put the two
+    /// out of step.
+    ///
+    /// A category is keyed on the `note`, not the whole string: the person is not a merchant, and
+    /// `Venmo: Sam - Dinner` says nothing about Sam and everything about Dinner. Keying on the
+    /// whole string would make every payment to one friend a different shop, and would send a
+    /// name off the phone for a category the note already settles.
+    ///
+    /// **Empty and nil are different answers.** Nil means "not one of our strings" and the
+    /// caller should use the descriptor. Empty means "ours, and the payment carried no note" —
+    /// there is nothing to key on, and a category cannot be guessed from a person's name.
+    ///
+    /// The split is on the *first* ` - `, because the name comes first and the note last. A name
+    /// containing that sequence would make the round trip ambiguous; the parser does not reject
+    /// one, and the cost is a note that comes out longer than it should, which is the safe
+    /// direction for a key.
+    static func note(fromMerchant merchant: String) -> String? {
+        let prefix = "Venmo: "
+        guard merchant.hasPrefix(prefix) else { return nil }
+        let rest = merchant.dropFirst(prefix.count)
+        guard let separator = rest.range(of: " - ") else { return "" }
+        return String(rest[separator.upperBound...])
+    }
+
     private static func capturedName(in line: String, direction: Direction) -> String? {
         let pattern = direction == .received ? receivedPhrase : sentPhrase
         guard let pattern else { return nil }

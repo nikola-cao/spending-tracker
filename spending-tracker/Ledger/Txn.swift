@@ -209,13 +209,29 @@ extension Txn {
 
     /// Whether this row can carry a category at all.
     ///
-    /// A deposit is money arriving or leaving the bank — a paycheck, a Zelle, a Venmo to a
-    /// friend — and a payment is a card being settled. Neither is spending, so neither belongs
-    /// in a spending bucket: filing a payment under "Dining" would make that figure a lie, and
-    /// filing it under "Miscellaneous" only makes the lie harder to see. They are left unset,
-    /// and the feed shows no chip for them at all rather than the word "Uncategorized", because
-    /// they are not missing an answer — the question does not apply.
-    var isCategorizable: Bool { isCharge }
+    /// **Everything except a card payoff.** A charge is spending. A deposit is money arriving or
+    /// leaving the bank — a paycheck, a Zelle, a Venmo sent to a friend — and a person-to-person
+    /// payment whose note says what it was for ("Dinner", "Panda") is exactly as categorisable as
+    /// a card charge; the *kind* of movement does not decide whether it has a subject.
+    ///
+    /// A payment is the one exclusion, and it is not a judgement about labels. A payment is a
+    /// card being settled rather than a purchase, so filing one under Dining would make that
+    /// figure a lie and leave the lie invisible. Payments show no chip at all rather than
+    /// "Uncategorized", because they are not missing an answer — the question does not apply.
+    var isCategorizable: Bool { !isPayment }
+
+    /// What this row is categorised by, and what a rule about it is keyed on.
+    ///
+    /// The descriptor for almost everything. For a person-to-person payment it is the **note**,
+    /// not the person — `Venmo: Sam - Dinner` is about Dinner, and keying on the whole string
+    /// would make every payment to one friend a different shop. See `CategorizationIdentity`.
+    ///
+    /// Empty means there is nothing to categorise by (a Venmo with no note). Callers must treat
+    /// that as "not askable" rather than falling back to the descriptor, or a real person's name
+    /// would leave the phone for an answer that cannot be guessed from it anyway.
+    var categorizationMerchant: String {
+        CategorizationIdentity.merchant(for: merchant)
+    }
 
     /// True when this row is filed under something.
     var hasCategory: Bool { !categoryRaw.isEmpty }

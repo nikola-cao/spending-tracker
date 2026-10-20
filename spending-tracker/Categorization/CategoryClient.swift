@@ -7,7 +7,7 @@
 
 import Foundation
 
-/// One merchant waiting for an answer.
+/// One description waiting for an answer.
 nonisolated struct CategoryRequest: Sendable, Equatable {
 
     /// The normalised key — what the answer is matched back on, and the id the request is keyed
@@ -46,7 +46,7 @@ nonisolated enum CategoryClientError: Error, Equatable {
     case blocked(String)
 }
 
-/// Classifies merchants into categories.
+/// Classifies descriptions into categories.
 ///
 /// A protocol rather than a concrete type for two reasons, and the second is not obvious. The
 /// first is ordinary: the pass has to be testable without a socket. The second is that the tests

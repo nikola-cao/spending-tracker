@@ -1747,7 +1747,11 @@ struct LedgerStoreTests {
     /// Only a charge is spending. A payment is a card being settled and a deposit is money
     /// arriving; filing either under a spending category would make that category's total a
     /// lie, and the rule that matches their merchant must not reach them.
-    @Test func aPaymentAndADepositAreNeverFiled() throws {
+    /// **A payment is never filed; a deposit is.** A payment is a card being settled rather than
+    /// a purchase, so a category on one would make that figure a lie. A deposit is money moving —
+    /// often for something specific, like a Venmo note that says "Dinner" — and the kind of
+    /// movement does not decide whether the row has a subject.
+    @Test func aPaymentIsNeverFiledAndADepositIs() throws {
         let (ledger, container, url) = try makeStore()
         try ledger.appendManual(
             kind: .payment, merchant: "AMEX PAYMENT", amount: "-825.77", date: nil, cardSuffix: "")
@@ -1761,8 +1765,55 @@ struct LedgerStoreTests {
 
         let rows = txns(container)
         #expect(rows.count == 2)
-        #expect(rows.allSatisfy { !$0.isCategorizable })
-        #expect(rows.allSatisfy { $0.categoryRaw.isEmpty }, "\(rows.map(\.categoryRaw))")
+        let payment = try #require(rows.first { $0.isPayment })
+        let deposit = try #require(rows.first { $0.isDeposit })
+
+        #expect(!payment.isCategorizable)
+        #expect(payment.categoryRaw.isEmpty, "a card payoff was filed as spending")
+
+        #expect(deposit.isCategorizable)
+        #expect(deposit.categoryRaw == "miscellaneous")
+    }
+
+    /// The note is the categorisation key for a person-to-person row, not the person. A rule
+    /// written against the note covers every Venmo with that note, whoever sent it.
+    @Test func aVenmoIsFiledByItsNoteNotByThePerson() throws {
+        let (ledger, container, url) = try makeStore()
+        try ledger.appendManualEntry(VenmoAlertParserTests.receivedWithNote)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        #expect(row.isDeposit)
+        #expect(row.isCategorizable)
+        #expect(row.categorizationMerchant == "Kimchi red")
+        #expect(!row.categorizationMerchant.contains("Sarvesh"),
+                "the person is not part of the key")
+
+        try appendInstruction("MerchantCategory | dining | ai | Dinner", to: url)
+        ledger.drain()
+        #expect(row.categoryRaw.isEmpty, "a different note must not match")
+
+        try appendInstruction("MerchantCategory | dining | ai | Kimchi red", to: url)
+        ledger.drain()
+        #expect(row.categoryRaw == "dining")
+    }
+
+    /// A Venmo with no note has nothing to categorise by, and must not fall back to the person's
+    /// name — the name is not a description of what was bought.
+    ///
+    /// Tested on the identity functions rather than through a captured body: there is no no-note
+    /// fixture, and the rule being pinned is the derivation itself.
+    @Test func aVenmoWithNoNoteHasNothingToKeyOn() {
+        #expect(VenmoAlertParser.note(fromMerchant: "Venmo: Sarvesh Gade - Kimchi red")
+                == "Kimchi red")
+        #expect(VenmoAlertParser.note(fromMerchant: "Venmo: Sarvesh Gade") == "")
+        #expect(VenmoAlertParser.note(fromMerchant: "BREEZE COFFEE") == nil)
+
+        // Empty for a note-less Venmo — deliberately *not* the descriptor, or a real person's
+        // name would become the categorisation key.
+        #expect(CategorizationIdentity.merchant(for: "Venmo: Sarvesh Gade") == "")
+        #expect(CategorizationIdentity.merchant(for: "Kimchi red") == "Kimchi red")
+        #expect(CategorizationIdentity.merchant(for: "WHOLE FOODS MKT") == "WHOLE FOODS MKT")
     }
 
     /// Deleting the line is the whole undo. `applyCategories` recomputes from scratch on every

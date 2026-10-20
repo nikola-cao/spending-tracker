@@ -183,9 +183,12 @@ struct CategoryEngineTests {
     /// Only a charge is spending. Asking about a card payoff could only produce a spending
     /// category for something that is not spending — and the descriptor of a Venmo row is
     /// somebody's name.
-    @Test func paymentsAndDepositsAreNeverSent() async throws {
+    /// A payment is a card being settled, not a purchase, so it is never asked about. A deposit
+    /// **is** — money moving for something specific is as categorisable as a card charge, and
+    /// the descriptor (or a person-to-person note) says what it was for.
+    @Test func aPaymentIsNeverSentButADepositIs() async throws {
         CategorizationBackoff.clearAll()
-        let (ledger, _, url) = try makeStore()
+        let (ledger, container, url) = try makeStore()
         try ledger.appendManual(
             kind: .payment, merchant: "AMEX PAYMENT", amount: "-825.77", date: nil, cardSuffix: "")
         try ledger.appendManual(
@@ -195,7 +198,33 @@ struct CategoryEngineTests {
         let client = FakeClient.answering("miscellaneous")
         await makeEngine(ledger, client: client).run()
 
-        #expect(client.askedKeys.isEmpty, "\(client.askedKeys)")
+        #expect(client.askedKeys == ["ZELLE FROM SAM"], "\(client.askedKeys)")
+        let rows = txns(container)
+        #expect(rows.first { $0.isPayment }?.categoryRaw == "")
+        #expect(rows.first { $0.isDeposit }?.categoryRaw == "miscellaneous")
+    }
+
+    /// A Venmo is asked about by its **note**, never by the person it came from: the note is
+    /// what says what was bought, and the name must not leave the phone to categorise it.
+    @Test func aVenmoIsAskedAboutByItsNote() async throws {
+        CategorizationBackoff.clearAll()
+        let (ledger, container, url) = try makeStore()
+        try ledger.appendManualEntry(VenmoAlertParserTests.receivedWithNote)
+        ledger.drain()
+
+        let client = FakeClient.answering("dining")
+        await makeEngine(ledger, client: client).run()
+
+        // The key is the normalised note — the request's id, not the raw text.
+        #expect(client.askedKeys == ["KIMCHI RED"], "\(client.askedKeys)")
+        // The rule written from the answer is keyed on the note too, so every future Venmo
+        // with that note matches it.
+        let rule = try #require(
+            JournalStore.readAll(from: url).last { $0.trimmedBody.hasPrefix("MerchantCategory |") })
+        #expect(rule.trimmedBody.contains("Kimchi red"))
+        #expect(!rule.trimmedBody.contains("Sarvesh"), "a person's name was written into a rule")
+
+        #expect(txns(container).first?.categoryRaw == "dining")
     }
 
     /// The Fidelity payment text is a second source of a kind that already existed, so it should

@@ -440,7 +440,7 @@ final class LedgerStore {
 
         for txn in txns where txn.isCategorizable {
             let decision = decisions.decide(
-                occurrenceKey: txn.occurrenceKey, merchant: txn.merchant)
+                occurrenceKey: txn.occurrenceKey, merchant: txn.categorizationMerchant)
             let label = decision.label ?? ""
             let source = decision.source?.rawValue ?? ""
 
@@ -487,15 +487,20 @@ final class LedgerStore {
         var seen = Set<String>()
         var waiting: [CategoryRequest] = []
         for txn in txns where txn.isCategorizable {
+            // The classification key, not the raw merchant: a Venmo is keyed on its note, and a
+            // Venmo with no note has nothing to ask about — an empty key is skipped below, which
+            // is deliberate. Falling back to the descriptor there would send a person's name to
+            // answer a question the name cannot answer.
+            let merchant = txn.categorizationMerchant
             guard !decisions.decide(
-                occurrenceKey: txn.occurrenceKey, merchant: txn.merchant).isAnswered
+                occurrenceKey: txn.occurrenceKey, merchant: merchant).isAnswered
             else { continue }
 
-            let key = MerchantKey.normalize(txn.merchant)
+            let key = MerchantKey.normalize(merchant)
             guard !key.isEmpty, seen.insert(key).inserted else { continue }
             guard isWanted(key) else { continue }
 
-            waiting.append(CategoryRequest(key: key, merchant: txn.merchant))
+            waiting.append(CategoryRequest(key: key, merchant: merchant))
             if waiting.count >= limit { break }
         }
         return waiting
@@ -507,11 +512,12 @@ final class LedgerStore {
     /// screen is: they are all restatements of the journal, and a remembered count is a count
     /// that can be wrong.
     struct CategorizationCounts: Equatable {
-        var charges = 0
+        /// Every row a category could apply to — charges and deposits, not payments.
+        var transactions = 0
         var categorized = 0
         var byPerson = 0
         var byModel = 0
-        /// Charges with nothing decided for them yet.
+        /// Rows with nothing decided for them yet.
         var waiting = 0
         /// Distinct merchants among those, which is what a pass would actually ask about.
         var merchantsWaiting = 0
@@ -530,19 +536,20 @@ final class LedgerStore {
         var waitingKeys = Set<String>()
 
         for txn in txns where txn.isCategorizable {
-            result.charges += 1
+            result.transactions += 1
 
             if txn.hasCategory {
                 result.categorized += 1
                 if txn.categoryWasSetByPerson { result.byPerson += 1 } else { result.byModel += 1 }
             }
 
+            let merchant = txn.categorizationMerchant
             guard !decisions.decide(
-                occurrenceKey: txn.occurrenceKey, merchant: txn.merchant).isAnswered
+                occurrenceKey: txn.occurrenceKey, merchant: merchant).isAnswered
             else { continue }
 
             result.waiting += 1
-            let key = MerchantKey.normalize(txn.merchant)
+            let key = MerchantKey.normalize(merchant)
             if !key.isEmpty { waitingKeys.insert(key) }
         }
 

@@ -306,10 +306,23 @@ An empty label is an **explicit clear**, not a missing value. Absent means "no l
 row, so the rules apply"; empty means "no category, and no rule may give it one". Without the
 distinction a single row could never be taken back out of a rule set on purpose.
 
-**Only charges.** A payment is a card being settled and a deposit is money arriving; neither is
-spending, so neither is filed — a payment under Dining would make that figure a lie. They are
-left unset and show no chip at all, rather than the word "Uncategorized", because they are not
-awaiting an answer. The filter matches charges only, `Uncategorized` included.
+**Everything except a payment.** A payment is a card being settled, not a purchase, so filing one
+under Dining would make that figure a lie; payments show no chip at all rather than
+"Uncategorized", because they are not awaiting an answer.
+
+A **deposit is filed**, and the kind of movement does not decide whether the row has a subject: a
+Venmo sent for dinner is a purchase from the user's side. What it is filed *by* depends on the
+source. A card charge uses its descriptor. A person-to-person payment uses its **note** —
+`Venmo: Sam - Dinner` is about Dinner, and the person is not a merchant: keying on the whole
+string would make every payment to one friend a separate shop, and would hand a real name to a
+third party to categorise a note that already names the purchase. A Venmo with no note has
+nothing to key on, so it is never asked about and never falls back to the name. `CategorizationIdentity`
+is the one place that decides this, because the classifier's question, the rule line and the
+fold's lookup all have to agree about it.
+
+The filter matches anything categorisable, `Uncategorized` included — so a Venmo for dinner appears
+under Dining. The **subtotal** uses `Txn.spendingTotal`, the same rule as the month's figure: a
+Venmo you sent is money out and counts, one you received is money in and does not.
 
 **The month's spending, and the three positions under it, never move when the filter changes.**
 They read the month, not the filtered rows: a Balance narrowed to dining sitting above an
@@ -325,16 +338,18 @@ app, not a degraded one. The key goes in the keychain: never a file, never `User
 never the journal, which the Raw journal screen renders and Diagnostics can export.
 
 **The classifier is never in the capture path.** It is a pass that runs *after* the drain, over
-the merchants nothing has answered for. Capture is untouched by it, and the App Intent could not
-reach it if it tried. A pass that fails writes nothing at all, so the worst a bad network can do
-is leave rows saying they have no category yet — which is what they already said.
+the descriptions nothing has answered for. Capture is untouched by it, and the App Intent could
+not reach it if it tried. A pass that fails writes nothing at all, so the worst a bad network can
+do is leave rows saying they have no category yet — which is what they already said.
 
-**The backlog is a question, not a queue.** Every pass asks the store which charges have no
-answer, so nothing is stored between passes and nothing has to survive the rebuild that empties
-the store. A merchant leaves the backlog by having one more journal line.
+**The backlog is a question, not a queue.** Every pass asks the store which rows have no answer,
+so nothing is stored between passes and nothing has to survive the rebuild that empties the store.
+A description leaves the backlog by having one more journal line.
 
-**A pass asks about a merchant, not a transaction** — so a subscription costs one request ever,
-and every spelling of the same shop is one question. That is `MerchantKey` doing its job.
+**A pass asks about a description, not a transaction** — so a subscription costs one request ever,
+and every spelling of the same shop is one question. That is `MerchantKey` doing its job, over the
+same `CategorizationIdentity` the fold resolves rows by. Only that string is sent: for a
+person-to-person payment it is the note alone, never the person's name.
 
 It runs when the app comes to the front, on pull-to-refresh, and when the network comes back
 while the app is open (`NWPathMonitor`, no entitlement and no `Info.plist` entry). It is **fire

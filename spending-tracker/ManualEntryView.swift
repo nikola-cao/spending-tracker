@@ -310,7 +310,11 @@ struct ManualEntryView: View {
                 // merchant has no category" is a different act from clearing one row, and the
                 // journal has no line for it — clearing a rule is deleting it from the Raw
                 // journal, which is deliberate because it puts every row back in the queue.
-                if !category.isEmpty {
+                //
+                // Also withheld when there is nothing to key on: a person-to-person payment with
+                // no note has a descriptor that is only a person's name, and a rule about a
+                // person is not a rule about what was bought.
+                if !category.isEmpty, !ruleMerchant.isEmpty {
                     Toggle(rememberLabel, isOn: $rememberForMerchant)
                 }
             } header: {
@@ -321,8 +325,14 @@ struct ManualEntryView: View {
         }
     }
 
+    /// What a merchant rule would be keyed on: the descriptor, or the note of a person-to-person
+    /// payment. Empty when there is nothing to key on. See `CategorizationIdentity`.
+    private var ruleMerchant: String {
+        CategorizationIdentity.merchant(for: trimmedMerchant)
+    }
+
     private var displayMerchant: String {
-        trimmedMerchant.isEmpty ? "this merchant" : trimmedMerchant
+        ruleMerchant.isEmpty ? "this transaction" : ruleMerchant
     }
 
     private var rememberLabel: String { "Remember for \(displayMerchant)" }
@@ -333,10 +343,10 @@ struct ManualEntryView: View {
                 + "there is for \(displayMerchant)."
         }
         if rememberForMerchant {
-            return "Every transaction from \(displayMerchant) gets this, now and in the future. "
-                + "Rows you have filed individually keep their own."
+            return "Every transaction filed under \(displayMerchant) gets this, now and in the "
+                + "future. Rows you have filed individually keep their own."
         }
-        return "Applies to this transaction only. Turn on Remember to file everything from "
+        return "Applies to this transaction only. Turn on Remember to file everything under "
             + "\(displayMerchant) the same way."
     }
 
@@ -463,8 +473,8 @@ struct ManualEntryView: View {
             // thing. Both are needed: the rule covers every other row from this merchant, and
             // the line covers *this* one, which may already have carried a different category
             // that no amount of rewriting a rule could dislodge — specificity wins.
-            if rememberForMerchant, !category.isEmpty {
-                try ledger.setMerchantRule(merchant: trimmedMerchant, label: category)
+            if rememberForMerchant, !category.isEmpty, !ruleMerchant.isEmpty {
+                try ledger.setMerchantRule(merchant: ruleMerchant, label: category)
             }
         } catch {
             outcome = .failed(error.localizedDescription)

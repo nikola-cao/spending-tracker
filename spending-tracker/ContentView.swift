@@ -74,9 +74,11 @@ struct ContentView: View {
     /// the subtotal in the list's own header, which is the figure that is honestly about the rows
     /// below it.
     ///
-    /// A payment or a deposit matches no category, **Uncategorized included**. Those rows are not
-    /// awaiting an answer — the question does not apply to them — so sweeping them into the
-    /// uncategorized pile would make that pile mean two different things at once.
+    /// A **payment** matches no category, `Uncategorized` included: a card payoff is not a
+    /// purchase, and sweeping it into the unfiled pile would make that pile mean two different
+    /// things at once. A **deposit** does match — a person-to-person payment's note names what
+    /// it was for — so a Venmo for dinner shows under Dining, because its deposit *is* the
+    /// purchase from the user's side.
     private var feedRows: [Txn] {
         guard let categoryFilter else { return monthTransactions }
         return monthTransactions.filter {
@@ -84,10 +86,14 @@ struct ContentView: View {
         }
     }
 
-    /// What the filtered rows add up to, by the same rule the month's Balance uses: deposits are
-    /// not a cost, and a payment is a negative one.
+    /// What the filtered rows add up to, by the same rule the month's spending uses.
+    ///
+    /// `Txn.spendingTotal`, not a local sum. With deposits categorisable, a Venmo you *sent* for
+    /// dinner is money out and belongs in the figure, while one you *received* is money in and
+    /// does not — which is exactly the rule the month's total already encodes. Writing a second
+    /// hand-rolled filter here is how the two would come to disagree.
     private var filteredSubtotal: String {
-        formatted(feedRows.filter { !$0.isDeposit }.reduce(0) { $0 + $1.amountMinor })
+        formatted(Txn.spendingTotal(feedRows))
     }
 
     /// A checkmark rather than a disabled row, matching the month picker above it, so the

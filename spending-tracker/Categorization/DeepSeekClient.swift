@@ -211,7 +211,7 @@ nonisolated struct DeepSeekClient: CategoryClient {
     /// issuer string like `DEEPSEERWEA` or `BREEZE*00HS5MV` is what actually arrives, and a list
     /// of bare nouns gives the model nothing to reason with.
     static let systemPrompt = """
-        You label card transactions with a spending category.
+        You label transactions with a spending category.
 
         Reply with a JSON object only, mapping each id you were given to exactly one category:
         {"<id>": "<category>"}
@@ -223,14 +223,19 @@ nonisolated struct DeepSeekClient: CategoryClient {
         grocery — supermarkets and food shops.
         retail — shops, online stores, clothing, electronics, household goods.
         transportation — fuel, parking, transit, rideshare, flights, hotels, car hire.
-        miscellaneous — anything else: bills, subscriptions, utilities, fees, insurance, and \
-        anything you cannot tell.
+        miscellaneous — anything else: bills, subscriptions, utilities, fees, insurance, income, \
+        and anything you cannot tell.
 
-        The names are card descriptors, so they are often abbreviated or truncated. Do your best \
-        with what is there. If a merchant is genuinely ambiguous, answer miscellaneous. Never \
-        invent a category. Never explain.
+        The names are transaction descriptions. They are often abbreviated or truncated, and a \
+        person-to-person payment arrives as a short note instead of a merchant — "Dinner", \
+        "Panda", "Kimchi red". Categorise a note by what it names, not by the person it came \
+        from; there is no person in what you are given.
 
-        Example: {"AMAZON": "retail", "CHICK FIL A": "dining", "SHELL OIL": "transportation"}
+        Do your best with what is there. If a description is genuinely ambiguous, answer \
+        miscellaneous. Never invent a category. Never explain.
+
+        Example: {"AMAZON": "retail", "CHICK FIL A": "dining", "SHELL OIL": "transportation", \
+        "DINNER": "dining", "PANDA": "dining"}
         """
 
     // MARK: - The reply

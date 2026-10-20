@@ -16,11 +16,11 @@ import Observation
 /// it runs inside every unit test's process. A network call in there would break the first
 /// property and put a request on the wire during the test run.
 ///
-/// **Nothing here can affect capture.** A charge is journalled, drained and on screen before this
-/// is ever reached, and a pass that fails writes nothing at all. The worst a bad network can do
-/// is leave rows saying they have no category yet — which is what they already said.
+/// **Nothing here can affect capture.** A transaction is journalled, drained and on screen before
+/// this is ever reached, and a pass that fails writes nothing at all. The worst a bad network can
+/// do is leave rows saying they have no category yet — which is what they already said.
 ///
-/// **The backlog is a question, not a queue.** Every pass asks the store which charges nothing has
+/// **The backlog is a question, not a queue.** Every pass asks the store which rows nothing has
 /// answered for, so nothing is stored between passes and nothing has to survive the rebuild that
 /// empties the store. A merchant leaves the backlog by having one more journal line, or by its row
 /// being deleted.

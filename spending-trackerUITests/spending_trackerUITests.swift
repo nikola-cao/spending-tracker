@@ -546,6 +546,45 @@ final class spending_trackerUITests: XCTestCase {
             .firstMatch
     }
 
+    /// A deposit is categorisable too — that is how a Venmo for dinner gets filed, and how a
+    /// Zelle or a paycheck can be labelled rather than sitting in the unfiled pile.
+    ///
+    /// Entered by hand rather than through a Venmo email: the point here is the reachability of
+    /// the picker and the chip on a non-charge row, not the parser (which has its own tests).
+    @MainActor
+    func testADepositCanBeCategorized() throws {
+        let app = launchApp()
+        let merchant = "UITEST VENMO \(UUID().uuidString.prefix(6))"
+
+        app.buttons["Add manually"].tap()
+        app.buttons["Deposit"].tap()
+        replaceText(in: app.textFields["Merchant"], with: merchant)
+        replaceText(in: app.textFields["Amount"], with: "18.00")
+        app.buttons["Save"].tap()
+        app.buttons["Cancel"].tap()
+
+        let row = app.staticTexts[merchant]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertTrue(cell(for: merchant, in: app, mentions: "Uncategorized").exists,
+                      "a deposit now waits for a category like any other row")
+
+        row.tap()
+        XCTAssertTrue(app.navigationBars["Edit deposit"].waitForExistence(timeout: 5))
+
+        let picker = app.buttons["Category"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5), "a deposit should offer a category")
+        picker.tap()
+        let dining = app.buttons["Dining"]
+        XCTAssertTrue(dining.waitForExistence(timeout: 5))
+        dining.tap()
+
+        app.buttons["Save"].tap()
+        app.buttons["Cancel"].tap()
+
+        XCTAssertTrue(cell(for: merchant, in: app, mentions: "Dining").waitForExistence(timeout: 5),
+                      "the deposit should show the category it was filed under")
+    }
+
     /// The classifier's screen, opened the way a user reaches it.
     ///
     /// Deliberately says nothing about whether a key is set: a simulator someone has pasted one
@@ -569,7 +608,7 @@ final class spending_trackerUITests: XCTestCase {
         // What leaves the phone, said plainly rather than buried — the one part of this feature
         // that cannot be taken back once it has happened. Near the top, so it is drawn.
         XCTAssertTrue(app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "Merchant names are sent to DeepSeek")
+            NSPredicate(format: "label CONTAINS %@", "Transaction descriptions are sent to DeepSeek")
         ).firstMatch.exists)
 
         // The actions are below the fold, and a `Form` only materialises what it has drawn — so
