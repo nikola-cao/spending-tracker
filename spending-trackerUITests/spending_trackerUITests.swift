@@ -80,6 +80,38 @@ final class spending_trackerUITests: XCTestCase {
         return "datePickers=\(pickers) switches=\(switches)"
     }
 
+    /// Scrolls the presented form until `element` is on screen.
+    ///
+    /// A SwiftUI `Form` does not materialise off-screen rows into the accessibility tree, and
+    /// `waitForExistence` does not scroll — see `testCategorizationScreenOpensWithNoKeyConfigured`.
+    /// Each swipe is bounded and the result is asserted, so a layout change fails here with a
+    /// clear message rather than as a tap on an element that is not really there.
+    @MainActor
+    private func scrollUntilHittable(
+        _ element: XCUIElement, in app: XCUIApplication, attempts: Int = 4
+    ) {
+        for _ in 0..<attempts {
+            if element.exists && element.isHittable { return }
+            app.swipeUp()
+        }
+        XCTAssertTrue(element.exists && element.isHittable,
+                      "\(element) should be on screen after scrolling")
+    }
+
+    /// Waits until `element` is enabled, not merely present.
+    ///
+    /// A disabled menu still accepts a tap and does nothing. The edit sheet holds Save and the
+    /// category controls disabled until its journal read finishes, so "exists" is not enough.
+    @MainActor
+    private func waitUntilEnabled(_ element: XCUIElement) {
+        let finished = XCTWaiter().wait(
+            for: [XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "enabled == true"), object: element)],
+            timeout: 5
+        )
+        XCTAssertEqual(finished, .completed, "\(element) should become enabled")
+    }
+
     /// The month picker is a `.principal` toolbar item, so it *is* the title — and the
     /// navigation bar therefore has no label of its own to match on. This looks for the button
     /// instead, and checks it names a month.
@@ -444,6 +476,127 @@ final class spending_trackerUITests: XCTestCase {
                        "deleting the line should take the transaction it recorded")
     }
 
+    /// The raw line behind a transaction, seen and deleted from the transaction's own sheet.
+    ///
+    /// Everything structural here is invisible to the unit tests: the section sits below Save
+    /// and only materialises after a scroll, the dialog is a different presentation from the
+    /// Raw journal's swipe, and the sheet has to let go of a row that has just been deleted
+    /// from the store. It also proves the journal half — the line is gone afterwards, not
+    /// merely the row from the feed.
+    @MainActor
+    func testARawJournalLineCanBeSeenAndDeletedFromTheEditSheet() throws {
+        let app = launchApp()
+        let merchant = "UITEST RAWSHEET \(UUID().uuidString.prefix(6))"
+
+        app.buttons["Add manually"].tap()
+        replaceText(in: app.textFields["Merchant"], with: merchant)
+        replaceText(in: app.textFields["Amount"], with: "6.66")
+        app.buttons["Save"].tap()
+        app.buttons["Cancel"].tap()
+
+        let row = app.staticTexts[merchant]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        XCTAssertTrue(app.navigationBars["Edit charge"].waitForExistence(timeout: 5))
+
+        let delete = app.buttons["Delete journal line"]
+        scrollUntilHittable(delete, in: app)
+
+        // The composed body, not the bare merchant: the feed row behind the sheet carries the
+        // merchant on its own, and a bare match would pick that up instead.
+        let line = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@",
+                        "Manual | ", merchant)
+        ).firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 5), "the sheet should show the raw line")
+
+        delete.tap()
+        XCTAssertTrue(app.staticTexts["Delete this journal line?"].waitForExistence(timeout: 5),
+                      "deleting a journal line should ask first")
+        app.buttons["Delete line"].tap()
+
+        // The row is gone from the store, so the sheet has to let go of it rather than render a
+        // deleted model.
+        XCTAssertTrue(app.navigationBars["Edit charge"].waitForNonExistence(timeout: 5),
+                      "the sheet should close once the line and the row are deleted")
+        XCTAssertTrue(row.waitForNonExistence(timeout: 5),
+                      "the transaction should go with the line")
+
+        // The journal half, which the feed assertion above cannot prove: a row deleted from the
+        // store alone would come back on the next drain.
+        app.buttons["More"].tap()
+        let rawJournal = app.buttons["Raw journal"]
+        XCTAssertTrue(rawJournal.waitForExistence(timeout: 5))
+        rawJournal.tap()
+        XCTAssertTrue(app.navigationBars["Raw journal"].waitForExistence(timeout: 5))
+        // Prove the screen actually read the file before an absence proves anything: every line
+        // is absent while `JournalView` still holds its initial empty state.
+        XCTAssertTrue(app.staticTexts.matching(
+            NSPredicate(format: "label ENDSWITH %@", "lines · newest first")
+        ).firstMatch.waitForExistence(timeout: 5),
+                      "the Raw journal should have loaded before an absence is meaningful")
+
+        let journalLine = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@",
+                        "Manual | ", merchant)
+        ).firstMatch
+        XCTAssertTrue(journalLine.waitForNonExistence(timeout: 3),
+                      "the line should be gone from the journal, not just the row from the feed")
+    }
+
+    /// Cancelling the confirmation leaves the row, its line and the sheet exactly as they were.
+    ///
+    /// The dialog's Cancel sits beside the sheet's own toolbar Cancel, so this also pins that
+    /// automation aimed at the dialog does not dismiss the whole sheet.
+    @MainActor
+    func testCancellingTheRawLineDeleteKeepsTheTransaction() throws {
+        let app = launchApp()
+        let merchant = "UITEST RAWCANCEL \(UUID().uuidString.prefix(6))"
+
+        app.buttons["Add manually"].tap()
+        replaceText(in: app.textFields["Merchant"], with: merchant)
+        replaceText(in: app.textFields["Amount"], with: "3.33")
+        app.buttons["Save"].tap()
+        app.buttons["Cancel"].tap()
+
+        let row = app.staticTexts[merchant]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        XCTAssertTrue(app.navigationBars["Edit charge"].waitForExistence(timeout: 5))
+
+        let delete = app.buttons["Delete journal line"]
+        scrollUntilHittable(delete, in: app)
+        delete.tap()
+
+        // The dialog is up. This presentation exposes only the destructive button — the
+        // system's own cancel is a tap on the dimmed backdrop, not a second button — so that is
+        // how the cancel path is exercised. (An unscoped "Cancel" query would also be
+        // ambiguous with the sheet's toolbar button while the dialog is up.)
+        let dialogTitle = app.staticTexts["Delete this journal line?"]
+        XCTAssertTrue(dialogTitle.waitForExistence(timeout: 5))
+        // Derived from the card's own frame: a point halfway between the screen edge and its
+        // left edge, at its vertical centre. A fixed normalized point could land on the card
+        // when a taller message or a smaller device moves it.
+        let card = app.sheets.firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: max(8, card.frame.minX / 2), dy: card.frame.midY))
+            .tap()
+        XCTAssertTrue(dialogTitle.waitForNonExistence(timeout: 5),
+                      "a tap outside should dismiss the dialog without choosing an action")
+
+        let line = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@",
+                        "Manual | ", merchant)
+        ).firstMatch
+        XCTAssertTrue(line.exists, "cancelling must leave the line listed")
+        XCTAssertTrue(app.navigationBars["Edit charge"].exists,
+                      "cancelling must leave the edit sheet open")
+
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "the transaction is untouched")
+    }
+
     @MainActor
     func testDiagnosticsScreenOpens() throws {
         let app = launchApp()
@@ -495,6 +648,9 @@ final class spending_trackerUITests: XCTestCase {
 
         let picker = app.buttons["Category"]
         XCTAssertTrue(picker.waitForExistence(timeout: 5), "the edit form should offer a category")
+        // Present is not the same as usable: the sheet holds its controls disabled until the
+        // raw journal read finishes, and a disabled menu accepts a tap and does nothing.
+        waitUntilEnabled(picker)
         picker.tap()
         let grocery = app.buttons["Grocery"]
         XCTAssertTrue(grocery.waitForExistence(timeout: 5))
@@ -573,6 +729,7 @@ final class spending_trackerUITests: XCTestCase {
 
         let picker = app.buttons["Category"]
         XCTAssertTrue(picker.waitForExistence(timeout: 5), "a deposit should offer a category")
+        waitUntilEnabled(picker)
         picker.tap()
         let dining = app.buttons["Dining"]
         XCTAssertTrue(dining.waitForExistence(timeout: 5))

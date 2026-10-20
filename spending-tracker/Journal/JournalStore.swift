@@ -189,12 +189,41 @@ nonisolated enum JournalStore {
     ///    from a moment earlier. Per line, the damage stays on the line it is on.
     ///  - A line that does not decode is reported rather than dropped, which is the difference
     ///    between "this arrived and we cannot read it" and "this never arrived". See `JournalRead`.
+    ///
+    /// This form folds "the file is not there" and "the file is there and cannot be read" into
+    /// the same empty answer. Callers to whom that distinction matters — a transaction detail
+    /// that says whether its line is missing or merely unreadable — use `readStrict`.
     static func read(from url: URL) -> JournalRead {
+        (try? readStrict(from: url)) ?? JournalRead()
+    }
+
+    /// As `read`, but an absent file and an unreadable one are different answers.
+    ///
+    /// A fresh install has no journal, which is ordinary and returns empty. A file that exists
+    /// and cannot be read throws, because "there is nothing here" is a claim the app must not
+    /// make about evidence it simply could not open — the same distinction `JournalRead` exists
+    /// to preserve one level down, between an empty file and a damaged line.
+    static func readStrict(from url: URL) throws -> JournalRead {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let data = try? Data(contentsOf: url) else { return JournalRead() }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {
+                return JournalRead()
+            }
+            throw JournalStoreError.unreadable
+        }
+        return decode(data)
+    }
 
+    /// Decodes a file's contents, one line at a time. The caller holds `lock`.
+    ///
+    /// Split out so the forgiving `read` and the strict `readStrict` cannot drift into decoding
+    /// the same bytes two different ways.
+    private static func decode(_ data: Data) -> JournalRead {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 

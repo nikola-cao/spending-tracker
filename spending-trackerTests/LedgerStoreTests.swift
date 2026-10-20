@@ -834,6 +834,140 @@ struct LedgerStoreTests {
         #expect(ledger.rowsRecorded(by: junkLine) == 0)
     }
 
+    // MARK: - The raw line behind one row
+
+    /// The transaction detail's lookup. The row's event names the invocation and the journal is
+    /// keyed on exactly that — this is the property the whole feature rests on.
+    @Test func journalLinkNamesTheLineTheRowWasRecordedFrom() throws {
+        let (ledger, container, url) = try makeStore()
+        let body = charge("2.50", "BREEZE*00HS5MV")
+        try appendAlert(body, to: url)
+        try appendAlert(charge("9.99", "ELSEWHERE"), to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first { $0.merchant == "BREEZE*00HS5MV" })
+        guard case .lines(let lines) = ledger.journalLink(for: row) else {
+            Issue.record("expected the capture line, saw \(ledger.journalLink(for: row))")
+            return
+        }
+
+        #expect(lines.count == 1)
+        #expect(lines.first?.rawText == body)
+    }
+
+    /// A journal written before single-line capture holds an `enter`/`result` pair under one
+    /// runID. Both halves are the evidence for the row, and both are returned in file order.
+    @Test func journalLinkForALegacyPairReturnsBothLines() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendLegacyPair(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        guard case .lines(let lines) = ledger.journalLink(for: row) else {
+            Issue.record("expected both halves of the pair")
+            return
+        }
+
+        #expect(lines.map(\.phase) == ["enter", "result"])
+    }
+
+    /// An edit and a category are instructions *about* the row, not the body it was recorded
+    /// from. The detail shows the capture line; the instructions stay on the Raw journal screen.
+    @Test func journalLinkIgnoresInstructionsAboutTheRow() throws {
+        let (ledger, container, url) = try makeStore()
+        let body = charge("2.50", "BREEZE")
+        try appendAlert(body, to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        try ledger.edit(
+            row, merchant: "BREEZE COFFEE", amount: "4.00", date: nil, cardSuffix: "7224")
+        try ledger.setCategory(row, label: "dining")
+        try ledger.setMerchantRule(merchant: "BREEZE COFFEE", label: "dining")
+        ledger.drain()
+
+        guard case .lines(let lines) = ledger.journalLink(for: row) else {
+            Issue.record("expected the capture line only")
+            return
+        }
+
+        #expect(lines.count == 1, "instructions name the row; they are not its evidence")
+        #expect(lines.first?.rawText == body)
+    }
+
+    /// The state a deletion whose store half failed leaves: the line is gone and the row is
+    /// still in the store. It is `.missing`, not `.noEvent` and not an empty list, because the
+    /// form has to know it cannot write an instruction against this row.
+    @Test func journalLinkWhenTheLineIsGoneButTheRowRemains() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+
+        let runID = try #require(txns(container).first?.event?.runID)
+        try JournalStore.remove(from: url) { $0.runID == runID }
+
+        let row = try #require(txns(container).first)
+        #expect(ledger.journalLink(for: row) == .missing)
+    }
+
+    /// A row with no event has no line and never can. Distinct from `.missing`, which says the
+    /// journal lost a line it used to hold.
+    @Test func journalLinkForARowWithNoEvent() throws {
+        let (ledger, _, _) = try makeStore()
+        let orphan = Txn(
+            amountMinor: 100, currencyCode: "USD", cardSuffix: "", merchant: "ORPHAN",
+            receivedAt: Date(), occurredAt: Date(), occurredAtIsFromMessage: false,
+            parserVersion: 1)
+
+        #expect(ledger.journalLink(for: orphan) == .noEvent)
+    }
+
+    /// A journal that is there and cannot be read must not be reported as "no line". The row
+    /// still exists; the file is what failed — the Raw journal screen's rule, one level up.
+    @Test func journalLinkWhenTheJournalCannotBeRead() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+        let row = try #require(txns(container).first)
+
+        // Present, and unreadable as a file: a directory where the journal should be.
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+
+        #expect(ledger.journalLink(for: row) == .unreadable)
+    }
+
+    /// Deleting an invocation takes the edit and category lines that name it. Instruction lines
+    /// are kept forever by the retention purge, so a surviving one would point at a row no
+    /// rebuild can produce — permanently. A merchant rule is about a merchant, not this row,
+    /// and stays.
+    @Test func deletingAnInvocationTakesItsInstructionsWithIt() throws {
+        let (ledger, container, url) = try makeStore()
+        try appendAlert(charge("2.50", "BREEZE"), to: url)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        let runID = try #require(row.event?.runID)
+        try ledger.edit(row, merchant: "BREEZE COFFEE", amount: "4.00", date: nil, cardSuffix: "")
+        try ledger.setCategory(row, label: "dining")
+        try ledger.setMerchantRule(merchant: "BREEZE", label: "dining")
+        ledger.drain()
+        #expect(JournalStore.readAll(from: url).count == 4)
+
+        let result = try ledger.deleteJournalInvocation(runID: runID)
+
+        #expect(result.lines == 3, "the capture line and the two instructions that named it")
+        #expect(result.rows == 1)
+        #expect(result.saveError == nil)
+        #expect(txns(container).isEmpty)
+
+        let left = JournalStore.readAll(from: url)
+        #expect(left.count == 1)
+        #expect(left.first?.trimmedBody.hasPrefix(
+            JournalInstructionParser.merchantCategoryPrefix) == true,
+                "a rule about the merchant outlives the row it happened to match")
+    }
+
     /// A pre-journal balance in `UserDefaults` is adopted only when the fold derives nothing.
     /// That branch is skipped on any device whose journal already derives a balance — so the
     /// stale value was never cleared, and deleting the last line that derived one would adopt

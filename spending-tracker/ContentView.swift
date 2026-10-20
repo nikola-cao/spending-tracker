@@ -273,7 +273,25 @@ struct ContentView: View {
                 BankBalanceView(ledger: ledger) { refresh() }
             }
             .sheet(item: $editingTxn) { txn in
-                ManualEntryView(ledger: ledger, editing: txn) { refresh() }
+                ManualEntryView(
+                    ledger: ledger,
+                    editing: txn,
+                    onDeleted: { problem in
+                        // The item is cleared FIRST, so no later render of the sheet closure can
+                        // be handed a row the deletion has already removed from the store. The
+                        // delete itself happens inside the sheet; by the time it calls this, the
+                        // model instance is gone.
+                        editingTxn = nil
+                        // A journal half that landed while the store half failed leaves a row
+                        // the feed can still finish. It is reported in the same place a failed
+                        // swipe is, because it is the same state and the same remedy. Assigned
+                        // unconditionally so a clean deletion also clears a banner an earlier
+                        // one left, exactly as the swipe path does.
+                        deletionError = problem
+                        refresh()
+                    },
+                    onRecorded: { refresh() }
+                )
             }
             // The initial drain, and — when the view appears already active — the pass as well.
             //
@@ -987,55 +1005,6 @@ struct JournalView: View {
                 ? "Line deleted, with the record the ledger still held for it."
                 : "Line deleted. Nothing in the ledger changed."
         }
-    }
-}
-
-/// One journal line.
-///
-/// Extracted for the same reason `TxnRow` is: the row is drawn by two callers' worth of
-/// context and the body reads better without it inline. No accessibility merging — the raw
-/// text has to stay its own element, which is how both a person with VoiceOver and the UI
-/// test find the line they mean.
-private struct JournalRow: View {
-    let record: JournalRecord
-
-    /// True when this line was not written by this app, into this app's own container.
-    ///
-    /// Every line records the process that wrote it and the journal directory it went to, for
-    /// exactly this: a write that landed somewhere the app cannot read is the one failure that
-    /// loses an alert with no other trace anywhere. Nothing rendered those fields until now,
-    /// which made an instrument that could not be read — the answer was in the file, and
-    /// unreachable from the phone.
-    private var writtenElsewhere: Bool {
-        record.processName != RuntimeFacts.processName()
-            || record.journalDirectory != JournalLocation.directoryPath
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                // No phase chip: one line per alert now, so it would say the same thing on
-                // every row. Older journals still hold an enter/result pair and simply read
-                // as two lines with the same body.
-                Text(record.receivedAt, format: .dateTime.hour().minute().second())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if writtenElsewhere {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(Color.red)
-                }
-                Spacer()
-                Text(record.processName)
-                    .font(.caption)
-                    .foregroundStyle(writtenElsewhere ? Color.red : Color.secondary)
-                Text("\(record.charCount) ch")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Text(record.rawText).font(.footnote.monospaced())
-        }
-        .padding(.vertical, 2)
     }
 }
 

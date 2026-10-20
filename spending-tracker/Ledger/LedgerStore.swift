@@ -948,6 +948,54 @@ final class LedgerStore {
         return result
     }
 
+    // MARK: - The raw evidence behind one row
+
+    /// What the raw journal holds for one transaction.
+    ///
+    /// The row's event names the invocation it was recorded under (`runID`), and the journal is
+    /// keyed on exactly that. A current journal holds one line per invocation; a journal written
+    /// before single-line capture holds an `enter`/`result` pair under one `runID`, and both are
+    /// returned because both are the evidence for this row.
+    ///
+    /// **Instruction lines about the row are deliberately not included.** An `Edit` or a
+    /// `Category` line names the row but is not the body it was recorded from; the transaction
+    /// detail asks for the raw entry, and the Raw journal screen is where the instructions
+    /// themselves live.
+    ///
+    /// The cases exist because "no lines" is not one state. A row can have no event at all, its
+    /// line can have been deleted while the row survived (the half of a deletion whose store
+    /// write failed), or the journal can be present and unreadable. Rendering all three as an
+    /// empty section would make the screen claim "there never was a line" about evidence it
+    /// could not open — the distinction `JournalRead` exists to preserve.
+    enum JournalLink: Equatable {
+        /// The line or lines this row was recorded from, in file order.
+        case lines([JournalRecord])
+
+        /// The row has no event, so no journal line can ever name it.
+        case noEvent
+
+        /// The event names an invocation the journal holds no readable line for.
+        case missing
+
+        /// The journal is present and could not be read.
+        case unreadable
+    }
+
+    /// Resolves the evidence behind one row. See `JournalLink`.
+    func journalLink(for txn: Txn) -> JournalLink {
+        guard let runID = txn.event?.runID else { return .noEvent }
+
+        let read: JournalRead
+        do {
+            read = try JournalStore.readStrict(from: journalURL)
+        } catch {
+            return .unreadable
+        }
+
+        let lines = read.records.filter { $0.runID == runID }
+        return lines.isEmpty ? .missing : .lines(lines)
+    }
+
     // MARK: - Deleting
 
     /// What a deletion removed, and whether the store half of it succeeded.
@@ -1032,6 +1080,22 @@ final class LedgerStore {
             return try deleteEditLine(record, named: edit.occurrenceKey)
         }
         return try deleteInvocations(runIDs: [record.runID])
+    }
+
+    /// Deletes one journal invocation by identity, and whatever the ledger derived from it.
+    ///
+    /// The transaction detail's entry point. It is deliberately runID-keyed rather than
+    /// record-keyed: that screen draws the lines it found for a row, and choosing one of them to
+    /// delete would make the invocation's identity depend on a display decision. A legacy
+    /// `enter`/`result` pair is one invocation and goes together, exactly as it does from the
+    /// Raw journal.
+    ///
+    /// It also skips `deleteJournalLine`'s outcome dispatch. That dispatch exists because the
+    /// Raw journal can hand it an `Edit` line, whose deletion means "revert the row it names";
+    /// this caller is always deleting the capture line behind a transaction.
+    @discardableResult
+    func deleteJournalInvocation(runID: UUID) throws -> JournalDeletion {
+        try deleteInvocations(runIDs: [runID])
     }
 
     /// Deletes a line the current schema cannot read back.
@@ -1124,12 +1188,12 @@ final class LedgerStore {
             // The whole read-filter-rename runs inside `JournalStore`, under one lock hold.
             // A throw here means the journal is untouched and so is the store.
             //
-            // A category line goes with the rows it names. It is addressed by occurrence key, so
-            // once the invocation it points at is gone the line can never match anything again —
-            // while instruction lines are kept forever, so it would sit in the file for the life
-            // of the app, re-read on every drain, doing nothing. Leaving it costs nothing today
-            // and is unfixable tomorrow: no screen shows it beside the row it used to name, and
-            // nothing would ever decide on its own that it was safe to remove.
+            // An instruction that names the row goes with it — see `namesOne`. Such a line is
+            // addressed by occurrence key, so once the invocation it points at is gone it can
+            // never match anything again. Instruction lines are kept forever, so leaving one
+            // would sit in the file for the life of the app, re-read on every drain, doing
+            // nothing: no screen shows it beside the row it used to name, and nothing would ever
+            // decide on its own that it was safe to remove.
             result.lines = try JournalStore.remove(from: journalURL) { record in
                 if runIDs.contains(record.runID) { return true }
                 return Self.namesOne(of: runIDs, record)
@@ -1151,7 +1215,16 @@ final class LedgerStore {
         return result
     }
 
-    /// Whether this line is a category naming a row whose invocation is being deleted.
+    /// Whether this line is an instruction naming a row whose invocation is being deleted.
+    ///
+    /// Both occurrence-keyed instruction kinds qualify — `Category` and `Edit`. Once the capture
+    /// line is gone, neither can ever match anything again, and instruction lines are kept
+    /// forever, so leaving one would leave a permanent reference to a row no rebuild can produce.
+    /// A `MerchantCategory` line is about a merchant rather than a row, and stays.
+    ///
+    /// Only lines the app wrote to itself are considered. A captured body beginning `Edit |` is
+    /// evidence, never a command — the drain makes the same distinction — and sweeping one up
+    /// here would delete the only copy of a real message.
     ///
     /// Parsed rather than pattern-matched on the text. The occurrence key's shape belongs to
     /// `JournalInstructionParser`, and a second reader of it here would be a second place for it
@@ -1161,9 +1234,22 @@ final class LedgerStore {
     /// which holds a lock and is deliberately not on the main actor. It touches no store state,
     /// so there is nothing for the isolation to protect.
     nonisolated private static func namesOne(of runIDs: Set<UUID>, _ record: JournalRecord) -> Bool {
-        guard case .category(let category)? = JournalInstructionParser.parse(record.trimmedBody)
-        else { return false }
-        guard let uuid = category.occurrenceKey
+        guard record.note == JournalRecord.manualMarker else { return false }
+        guard let instruction = JournalInstructionParser.parse(record.trimmedBody) else {
+            return false
+        }
+
+        let occurrenceKey: String
+        switch instruction {
+        case .edit(let edit):
+            occurrenceKey = edit.occurrenceKey
+        case .category(let category):
+            occurrenceKey = category.occurrenceKey
+        case .setBankBalance, .setCardBalance, .merchantCategory:
+            return false
+        }
+
+        guard let uuid = occurrenceKey
             .split(separator: "#", maxSplits: 1).first
             .flatMap({ UUID(uuidString: String($0)) })
         else { return false }

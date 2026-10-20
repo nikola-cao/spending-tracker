@@ -734,6 +734,48 @@ screen and the feed can finish the job. The reverse order fails the other way �
 vanishes and then silently returns on the next drain, which reads as the app undoing a delete
 rather than as a failed write.
 
+#### The line beside the transaction
+
+Tapping a transaction opens its form, and below Save the same line the Raw journal draws is
+shown — the body the row was recorded from, with **Show full text** when it is long. The lookup
+is keyed on the row's event (`journalLink(for:)`), never on the body: a body is not unique per
+transaction, and a repeated Fidelity charge is byte-identical every month.
+
+**It is the capture line, not the instructions about it.** An `Edit` or `Category` line names
+the row but is not the evidence it came from; those stay on the Raw journal screen. Saving a
+change appends a line rather than rewriting the original, which is why the amount in the form
+can differ from the amount in the body below it.
+
+Deleting it is the same deletion as the Raw journal's swipe through a different door, and it
+asks the same question. It is keyed on the **invocation**, so an older `enter`/`result` pair
+goes together, and the `Edit` and `Category` lines that named the row go with it: instruction
+lines are kept forever, and a surviving one would point at a row no rebuild could produce.
+
+Three states are not "no line", and the form says which one it is:
+
+| State | What the section says |
+|---|---|
+| `noEvent` | The row has no event, so no line can ever name it. |
+| `missing` | The event names an invocation the journal holds no readable line for — deleted already, or damaged. |
+| `unreadable` | The journal is there and could not be read. |
+
+**Save is refused in all three.** A save appends an instruction naming the row's occurrence,
+and the store is rebuilt from the journal; against a line that is gone, the change would show
+on screen until the next rebuild and then vanish. For `noEvent` and `missing` the one honest
+action left is swiping the row in the feed, and the section says so. `unreadable` is a file
+problem rather than a missing line: the section says the line cannot be read, and does not
+advise deleting a row the journal may still account for.
+
+The `unreadable` case is why `JournalStore.readStrict` exists. `read` folds "the file is not
+there" and "the file is there and could not be opened" into one empty answer, which is right
+for the drain and the Raw journal screen but wrong here — this section is about to tell the
+user whether their evidence exists.
+
+If the deletion's journal half lands and the store save fails, the sheet closes rather than
+staying editable. The capture line is already gone, so a save from there would write an
+instruction no rebuild could replay; the caller reports the half-state in the feed's deletion
+banner, where the same remedy (swipe the row) is already offered.
+
 #### A line that cannot be read is shown, not dropped
 
 `JournalStore.read` returns the records **and** the lines it could not decode. It did not
