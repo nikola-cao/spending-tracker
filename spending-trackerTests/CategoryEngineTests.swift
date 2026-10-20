@@ -198,6 +198,28 @@ struct CategoryEngineTests {
         #expect(client.askedKeys.isEmpty, "\(client.askedKeys)")
     }
 
+    /// The Fidelity payment text is a second source of a kind that already existed, so it should
+    /// need no category-side knowledge at all — and this pins that: a parser returning the wrong
+    /// kind is exactly how a payment would slip into the classifier and be filed as spending.
+    /// It also carries a real card number and a date, neither of which may change the answer.
+    @Test func aFidelityPaymentIsNeverSent() async throws {
+        CategorizationBackoff.clearAll()
+        let (ledger, container, url) = try makeStore()
+        try ledger.appendManualEntry(FidelityPaymentParserTests.realPayment)
+        ledger.drain()
+
+        let row = try #require(txns(container).first)
+        #expect(row.isPayment)
+        #expect(!row.isCategorizable)
+        #expect(row.cardSuffix == "7224")
+
+        let client = FakeClient.answering("miscellaneous")
+        await makeEngine(ledger, client: client).run()
+
+        #expect(client.askedKeys.isEmpty, "a Fidelity payment was offered to the classifier")
+        #expect(row.categoryRaw.isEmpty)
+    }
+
     @Test func nothingWaitingLeavesItIdle() async throws {
         CategorizationBackoff.clearAll()
         let (ledger, _, url) = try makeStore()
