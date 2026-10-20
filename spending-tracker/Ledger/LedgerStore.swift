@@ -174,16 +174,6 @@ final class LedgerStore {
         drain()
     }
 
-    /// The balance the journal describes: the last value set, plus every deposit since.
-    ///
-    /// **Derived, never stored.** It used to live in `UserDefaults`, which meant it survived a
-    /// rebuild only by accident — the journal could not restore it, so a schema change would
-    /// have rebuilt the ledger and left the balance stale and unexplainable.
-    ///
-    /// Folded in journal order, which is the only order there is: the journal is append-only
-    /// and position is meaningful, so "the last balance set" and "the deposits after it" are
-    /// well defined without a single timestamp being read. Deleting a deposit's line therefore
-    /// gives the money back with no extra bookkeeping — the fold simply sees one fewer.
     /// Every category the journal asserts, in the only order there is.
     ///
     /// Two tiers, kept apart rather than merged, because they are different claims: a line about

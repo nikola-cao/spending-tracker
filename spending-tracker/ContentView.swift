@@ -269,7 +269,20 @@ struct ContentView: View {
             .sheet(item: $editingTxn) { txn in
                 ManualEntryView(ledger: ledger, editing: txn) { refresh() }
             }
-            .task { refresh() }
+            // The initial drain, and — when the view appears already active — the pass as well.
+            //
+            // The scene-phase handler below is the normal trigger, but it fires on a
+            // *transition*. A view that first appears in `.active` observes no change, and would
+            // drain the journal and then leave every new row uncategorized until the user
+            // backgrounded the app or pulled to refresh — while the settings screen promises a
+            // pass whenever the app comes to the front. The guard is on the phase rather than
+            // unconditional because a background launch servicing the capture intent can reach
+            // this view, and a pass with no user present is not something to start by accident.
+            // `run()` is single-flight, so the two paths cannot classify twice.
+            .task {
+                refresh()
+                if scenePhase == .active { classify() }
+            }
             // Draining on foreground is what turns the raw journal into ledger rows. It is
             // idempotent, so it is safe to run on every activation, and it doubles as the
             // self-healing path: anything the intent wrote while the app was closed is picked
