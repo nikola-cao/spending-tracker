@@ -651,20 +651,28 @@ private struct TxnRow: View {
         .padding(.vertical, 2)
     }
 
-    /// Green for money arriving, red for a payment, ordinary otherwise.
+    /// Green for money arriving, red for a payment or money leaving the bank, ordinary otherwise.
     ///
-    /// The payment arm comes first and is not a special case of the other two. `isMoneyIn` asks
+    /// The payment arm comes first and is not a special case of the money-in arm. `isMoneyIn` asks
     /// the kind before the sign precisely so a payment is not green, and a payment's sign is
     /// negative like a refund's — so a rule written the other way round would have to say
     /// "negative, but not *that* kind of negative" and would get it wrong the moment a fourth
     /// kind appeared.
     ///
-    /// Every arm is named explicitly. A bare `.primary` against a `Color` is a
+    /// What is left is split by sign. A negative deposit is money leaving the bank — a Venmo
+    /// sent, for example, rather than money arriving — so it reads red like a payment. A charge
+    /// stays ordinary: spending is the normal case, not a warning, and a negative charge has
+    /// already been claimed by `isMoneyIn` as a refund.
+    ///
+    /// This is a property rather than an inline expression because the answer has to be a
+    /// `Color`. A bare `.primary` against a `Color` in a `foregroundStyle` ternary is a
     /// `HierarchicalShapeStyle` on one side and a `Color` on the other, which does not
-    /// type-check — the same trap the refuted-write row hit before.
+    /// type-check; the declared return type here supplies the context — the same trap the
+    /// refuted-write row hit before.
     private var amountColor: Color {
         if txn.isPayment { return .red }
-        return txn.isMoneyIn ? .green : .primary
+        if txn.isMoneyIn { return .green }
+        return txn.amountMinor < 0 ? .red : .primary
     }
 
     private var subtitle: String {

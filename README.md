@@ -585,11 +585,13 @@ It is also the whole reason "This Month's Spending" and Balance are two figures 
 A payment comes off Balance, because it settles a debt, and does not come off the month, because
 the debt it settled was not this month's.
 
-In the feed a payment is **red**, where money arriving is green and everything else is ordinary.
-The payment arm is checked first, and is not a special case of the other two: `isMoneyIn` asks
-the kind before the sign precisely so a payment is not green, and a payment's amount is negative
-like a refund's — so a rule written the other way round would have to say "negative, but not
-*that* kind of negative", and would get it wrong the moment a fourth kind appeared.
+In the feed a payment is **red**, as is a negative deposit — money leaving the bank, a Venmo
+sent being the ordinary case — while money arriving is green and an ordinary charge is left
+uncoloured. The payment arm is checked first, and is not a special case of the money-in arm:
+`isMoneyIn` asks the kind before the sign precisely so a payment is not green, and a payment's
+amount is negative like a refund's — so a rule written the other way round would have to say
+"negative, but not *that* kind of negative", and would get it wrong the moment a fourth kind
+appeared.
 
 ### Reading the email
 
